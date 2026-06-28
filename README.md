@@ -11,7 +11,7 @@ TradingBrain is a desktop-first intelligent trading platform for strategy develo
 - PostgreSQL
 - SQLAlchemy
 - MetaTrader 5
-- React / Next.js (planned)
+- Next.js (React) Frontend (planned)
 
 ---
 
