@@ -1,10 +1,8 @@
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.lifespan import lifespan
 
 
 tags_metadata = [
@@ -13,13 +11,6 @@ tags_metadata = [
         "description": "System health and monitoring endpoints.",
     }
 ]
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Starting TradingBrain Backend")
-    yield
-    logger.info("Stopping TradingBrain Backend")
 
 
 app = FastAPI(
@@ -42,9 +33,10 @@ A modular trading platform for:
     lifespan=lifespan,
 )
 
+
 app.include_router(
     health_router,
-    prefix="/api/v1",
+    prefix=settings.API_V1_PREFIX,
 )
 
 
