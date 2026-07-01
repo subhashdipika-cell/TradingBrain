@@ -1,0 +1,414 @@
+:root {
+  --bg: #0b1020;
+  --panel: #141b2e;
+  --panel-2: #1b2540;
+  --border: #26304d;
+  --text: #e6ebf5;
+  --muted: #8a96b3;
+  --accent: #4f8cff;
+  --pos: #2fbf71;
+  --neg: #ff5d5d;
+  --radius: 12px;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.brand {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+  overflow: hidden;
+  line-height: 0;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+.brand:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.brand:active {
+  filter: brightness(0.96);
+}
+
+.brand-logo {
+  width: 100%;
+  height: auto;
+  max-height: 160px;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+.brand-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 22px 24px;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.brand-fallback strong {
+  font-size: 30px;
+  color: var(--text);
+  letter-spacing: 0.5px;
+}
+
+.brand-accent {
+  color: var(--accent);
+}
+
+.brand-fallback small {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.brand-refresh {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  line-height: 1;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(11, 16, 32, 0.7);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.brand:hover .brand-refresh {
+  opacity: 1;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.badge .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.badge-online .dot {
+  background: var(--pos);
+}
+.badge-offline .dot {
+  background: var(--neg);
+}
+.badge-url {
+  color: var(--muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.ghost-btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 880px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.form input,
+.form select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 11px;
+  font-size: 14px;
+}
+
+.form button {
+  width: 100%;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 11px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 6px;
+}
+
+.form button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 12px 0 0;
+  line-height: 1.5;
+}
+
+.toggle {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px !important;
+  color: var(--text) !important;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.toggle input {
+  width: auto;
+  accent-color: var(--accent);
+}
+
+.toggle.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.metric {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.metric-pos {
+  border-left-color: var(--pos);
+}
+.metric-neg {
+  border-left-color: var(--neg);
+}
+
+.metric-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.metric-value {
+  font-size: 19px;
+  font-weight: 600;
+}
+
+.pos {
+  color: var(--pos);
+}
+.neg {
+  color: var(--neg);
+}
+
+.chart-card .chart-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.chart {
+  width: 100%;
+  height: auto;
+}
+
+.chart-line {
+  fill: none;
+  stroke-width: 2;
+}
+.pos-stroke {
+  stroke: var(--pos);
+}
+.neg-stroke {
+  stroke: var(--neg);
+}
+
+.chart-baseline {
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+
+.chart-tick {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.tag {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.placeholder,
+.error {
+  color: var(--muted);
+}
+
+.error {
+  border-color: var(--neg);
+  color: var(--neg);
+}
+
+.report {
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--text);
+}
+
+details summary {
+  cursor: pointer;
+  font-weight: 600;
+}

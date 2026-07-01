@@ -1,7 +1,12 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.backtest import router as backtest_router
+from app.api.database import router as database_router
+from app.api.forward_test import router as forward_test_router
 from app.api.health import router as health_router
+from app.api.reports import router as reports_router
+from app.api.results import router as results_router
 from app.core.config import settings
 from app.core.exceptions import TradingBrainException
 from app.core.handlers import tradingbrain_exception_handler
@@ -12,7 +17,23 @@ tags_metadata = [
     {
         "name": "Health",
         "description": "System health and monitoring endpoints.",
-    }
+    },
+    {
+        "name": "Database",
+        "description": "Database connectivity endpoints.",
+    },
+    {
+        "name": "Backtest",
+        "description": "Run TB001 backtests and retrieve performance metrics.",
+    },
+    {
+        "name": "Forward Test",
+        "description": "Trigger Dhan live-paper (forward) tests on index options.",
+    },
+    {
+        "name": "Reports",
+        "description": "Daily performance reports and Obsidian vault export.",
+    },
 ]
 
 app = FastAPI(
@@ -64,6 +85,31 @@ app.add_exception_handler(
 
 app.include_router(
     health_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    database_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    backtest_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    results_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    forward_test_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    reports_router,
     prefix=settings.API_V1_PREFIX,
 )
 
