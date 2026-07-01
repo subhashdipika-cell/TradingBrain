@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from app.domains.analytics.journal import TradeJournal, TradeRecord
 from app.domains.execution.broker import Broker, Order
 from app.domains.execution.feed import DataFeed, MarketSnapshot
+from app.domains.market.indicators import analyse
 from app.domains.market.session import NSE_SESSION, TradingSession
 from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.position_sizing import PositionSizer
@@ -130,6 +131,7 @@ class TradingEngine:
         self._open_trade: _OpenTrade | None = None
         self._position_strategy: BaseStrategy | None = None
         self._current_day: date | None = None
+        self._recent_candles: list = []   # rolling window for structure indicators
 
     # ------------------------------------------------------------------
     # Strategy resolution (single strategy or regime-based selector)
@@ -617,6 +619,22 @@ class TradingEngine:
         )
         context.metadata["option_chain"] = snapshot.option_chain
         context.metadata["strike_step"] = spec.strike_step
+
+        # ── Market structure from indicators (drives regime + strategy routing) ──
+        self._recent_candles.append(snapshot.candle)
+        if len(self._recent_candles) > 250:
+            self._recent_candles = self._recent_candles[-250:]
+        struct = analyse(self._recent_candles, iv=snapshot.implied_vol)
+        if struct is not None:
+            context.ema_fast = struct.ema_fast
+            context.ema_slow = struct.ema_slow
+            context.adx = struct.adx
+            context.atr = struct.atr
+            context.trend = struct.trend
+            context.volatility_regime = struct.vol_regime
+            context.indicators.update(
+                {"rsi": struct.rsi, "adx": struct.adx, "atr": struct.atr}
+            )
         return context
 
     @staticmethod

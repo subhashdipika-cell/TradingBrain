@@ -11,15 +11,19 @@ const DEFAULTS: BacktestRequest = {
   symbol: "NIFTY",
   num_days: 30,
   bar_minutes: 5,
-  starting_capital: 1_000_000,
+  starting_capital: 400_000,
   base_iv: 0.12,
   annual_vol: 0.13,
   seed: 42,
+  strategy: "AUTO",
 };
 
 export function BacktestForm({ onRun, loading }: Props) {
   const [form, setForm] = useState<BacktestRequest>(DEFAULTS);
   const [symbols, setSymbols] = useState<string[]>(["NIFTY", "BANKNIFTY"]);
+  const [strategies, setStrategies] = useState<{ name: string; description: string }[]>([
+    { name: "AUTO", description: "Auto-select by market structure/regime" },
+  ]);
   const [dhanAvailable, setDhanAvailable] = useState(false);
   const [realData, setRealData] = useState(false);
 
@@ -31,12 +35,16 @@ export function BacktestForm({ onRun, loading }: Props) {
         setDhanAvailable(r.dhan_data_available);
       })
       .catch(() => undefined);
+    api
+      .strategies()
+      .then((r) => setStrategies(r.strategies))
+      .catch(() => undefined);
   }, []);
 
   const update = (key: keyof BacktestRequest, value: string) => {
     setForm((prev) => ({
       ...prev,
-      [key]: key === "symbol" ? value : Number(value),
+      [key]: key === "symbol" || key === "strategy" ? value : Number(value),
     }));
   };
 
@@ -48,6 +56,20 @@ export function BacktestForm({ onRun, loading }: Props) {
   return (
     <form className="card form" onSubmit={submit}>
       <h2>Backtest parameters</h2>
+
+      <label>
+        Strategy
+        <select
+          value={form.strategy}
+          onChange={(e) => update("strategy", e.target.value)}
+        >
+          {strategies.map((s) => (
+            <option key={s.name} value={s.name} title={s.description}>
+              {s.name === "AUTO" ? "AUTO — by market structure" : `${s.name} · ${s.description}`}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <label className={`toggle ${dhanAvailable ? "" : "disabled"}`}>
         <input

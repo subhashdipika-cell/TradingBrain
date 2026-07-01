@@ -67,16 +67,27 @@ def _load_credentials() -> tuple[str, str]:
 def run_forward_test(
     *,
     symbol: str = "NIFTY",
-    starting_capital: float = 1_000_000.0,
-    use_selector: bool = True,
+    starting_capital: float = 400_000.0,
+    strategy: str = "AUTO",
     max_polls: int | None = None,
 ) -> str | None:
-    """Run a live paper (forward) test and persist the result. Returns run id."""
+    """Run a live paper (forward) test and persist the result. Returns run id.
+
+    ``strategy="AUTO"`` uses the structure-aware regime selector; a specific name
+    (TB001..TB006) forward-tests that single strategy."""
     key = symbol.upper()
     if key not in _UNDERLYING:
         raise ValueError(f"No Dhan underlying id mapped for symbol '{symbol}'.")
     security_id, segment = _UNDERLYING[key]
     client_id, access_token = _load_credentials()
+
+    auto = (strategy or "AUTO").upper() == "AUTO"
+    strat_obj = None
+    if not auto:
+        from app.domains.strategy.contracts.registry import StrategyRegistry
+        from app.domains.strategy.selector import register_all_strategies
+        register_all_strategies()
+        strat_obj = StrategyRegistry.get(strategy)()
 
     trader = LivePaperTrader.from_dhan(
         security_id=security_id,
@@ -85,7 +96,8 @@ def run_forward_test(
         access_token=access_token,
         symbol="NIFTY" if key in ("NIFTY", "NIFTY50") else key,
         starting_capital=starting_capital,
-        use_selector=use_selector,
+        use_selector=auto,
+        strategy=strat_obj,
         max_polls=max_polls,
         log=log,
     )
@@ -95,13 +107,14 @@ def run_forward_test(
     store = ResultsStore(settings.RESULTS_DIR)
     from app.domains.analytics.reports import render_report
 
-    report = render_report(journal, title=f"Forward test - {symbol}")
+    label = "AUTO (regime)" if auto else strategy
+    report = render_report(journal, title=f"Forward test [{label}] - {symbol}")
     summary = store.save(
         run_type="forward-test",
         symbol=symbol,
         journal=journal,
         report=report,
-        params={"starting_capital": starting_capital, "use_selector": use_selector},
+        params={"starting_capital": starting_capital, "strategy": strategy},
     )
     log.info(
         "Saved forward-test result %s (net Rs %.0f)", summary.id, summary.net_return
@@ -112,7 +125,7 @@ def run_forward_test(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a Dhan forward (paper) test.")
     parser.add_argument("--symbol", default="NIFTY")
-    parser.add_argument("--capital", type=float, default=1_000_000.0)
+    parser.add_argument("--capital", type=float, default=400_000.0)
     parser.add_argument(
         "--max-polls",
         type=int,
@@ -120,15 +133,15 @@ def main() -> None:
         help="Stop after N polls (default: run until interrupted).",
     )
     parser.add_argument(
-        "--single-strategy",
-        action="store_true",
-        help="Use TB001 only instead of regime-based selection.",
+        "--strategy",
+        default="AUTO",
+        help="AUTO (regime-based) or a specific strategy: TB001..TB006.",
     )
     args = parser.parse_args()
     run_forward_test(
         symbol=args.symbol,
         starting_capital=args.capital,
-        use_selector=not args.single_strategy,
+        strategy=args.strategy,
         max_polls=args.max_polls,
     )
 

@@ -26,12 +26,13 @@ def _engine(strategy=None, selector=None, feed=None):
     )
 
 
-def test_engine_with_selector_runs_tb001_in_calm_regime():
-    # Calm synthetic data (NORMAL vol -> RANGING) -> selector activates TB001.
+def test_engine_with_selector_runs_range_seller_in_calm_regime():
+    # Calm synthetic data (normal vol -> RANGING) -> the structure router
+    # activates the defined-risk range seller (Iron Condor / TB004).
     journal = _engine(selector=default_selector()).run()
     assert journal.trade_count >= 1
-    assert all(t.strategy == "TB001" for t in journal.trades)
-    assert all(t.structure == "IRON_FLY" for t in journal.trades)
+    assert all(t.strategy == "TB004" for t in journal.trades)
+    assert all(t.structure == "IRON_CONDOR" for t in journal.trades)
 
 
 class _Bullish(BaseStrategy):

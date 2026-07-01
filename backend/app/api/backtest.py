@@ -76,6 +76,20 @@ async def list_symbols() -> dict[str, object]:
     }
 
 
+@router.get("/backtest/strategies")
+async def list_strategies() -> dict[str, object]:
+    """Available strategies for back/forward testing. AUTO = structure-aware
+    regime selection; the rest are individual option-selling strategies."""
+    from app.domains.strategy.contracts.registry import StrategyRegistry
+    from app.domains.strategy.selector import register_all_strategies
+
+    register_all_strategies()
+    items = [{"name": "AUTO", "description": "Auto-select by market structure/regime"}]
+    for name in StrategyRegistry.list():
+        items.append({"name": name, "description": StrategyRegistry.get(name).description})
+    return {"strategies": items}
+
+
 @router.post("/backtest/run", response_model=BacktestResponse)
 async def run(request: BacktestRequest) -> BacktestResponse:
     """Run a TB001 backtest on synthetic data and return metrics + report."""
@@ -91,6 +105,7 @@ async def run(request: BacktestRequest) -> BacktestResponse:
         base_iv=request.base_iv,
         annual_vol=request.annual_vol,
         seed=request.seed,
+        strategy=request.strategy,
     )
     result = await run_in_threadpool(run_backtest, config)
     _store.save(
@@ -127,6 +142,7 @@ async def run_dhan(request: BacktestRequest) -> BacktestResponse:
             symbol=symbol,
             starting_capital=request.starting_capital,
             bar_minutes=request.bar_minutes,
+            strategy=request.strategy,
         )
 
     try:

@@ -7,6 +7,8 @@ import type {
   ForwardTestStartResponse,
   ForwardTestStatus,
   HealthResponse,
+  LotSizes,
+  LotSizesRefresh,
   ResultRecord,
   ResultSummary,
 } from "./types";
@@ -36,6 +38,12 @@ export const api = {
   symbols(): Promise<{ symbols: string[]; dhan_data_available: boolean }> {
     return request<{ symbols: string[]; dhan_data_available: boolean }>(
       "/backtest/symbols",
+    );
+  },
+
+  strategies(): Promise<{ strategies: { name: string; description: string }[] }> {
+    return request<{ strategies: { name: string; description: string }[] }>(
+      "/backtest/strategies",
     );
   },
 
@@ -85,5 +93,13 @@ export const api = {
       `/reports/monthly/export${month ? `?month=${month}` : ""}`,
       { method: "POST" },
     );
+  },
+
+  lotSizes(): Promise<LotSizes> {
+    return request<LotSizes>("/instruments/lot-sizes");
+  },
+
+  refreshLotSizes(): Promise<LotSizesRefresh> {
+    return request<LotSizesRefresh>("/instruments/lot-sizes/refresh", { method: "POST" });
   },
 };

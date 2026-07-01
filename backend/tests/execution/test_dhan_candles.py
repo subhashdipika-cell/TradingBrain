@@ -40,6 +40,13 @@ def test_candles_from_response_handles_failure():
 
 
 def test_dhan_candle_feed_guarded_without_sdk():
+    import importlib.util
+
+    import pytest
+
+    if importlib.util.find_spec("dhanhq") is not None:
+        pytest.skip("dhanhq is installed — the SDK-absent guard doesn't apply")
+
     feed = DhanCandleFeed(
         security_id=13,
         exchange_segment="IDX_I",
@@ -47,7 +54,7 @@ def test_dhan_candle_feed_guarded_without_sdk():
         client_id="c",
         access_token="t",
     )
-    # dhanhq is not installed in CI -> clear, guarded error.
+    # dhanhq is not installed -> clear, guarded error.
     try:
         feed.fetch_intraday(interval=5)
         raise AssertionError("expected RuntimeError without dhanhq")

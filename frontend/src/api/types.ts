@@ -12,6 +12,7 @@ export interface BacktestRequest {
   base_iv: number;
   annual_vol: number;
   seed: number;
+  strategy: string;
 }
 
 export interface TradeSummary {
@@ -96,7 +97,7 @@ export interface ForwardTestRequest {
   symbol: string;
   starting_capital?: number;
   max_polls?: number;
-  single_strategy?: boolean;
+  strategy?: string;
 }
 
 export interface ForwardTestStartResponse {
@@ -176,4 +177,18 @@ export interface ExportResult {
   date?: string;
   month?: string;
   runs: number;
+}
+
+// ── Instrument lot sizes ──────────────────────────────────────────────────────
+export interface LotSizes {
+  lots: Record<string, number>;
+  updated: string | null;
+}
+
+export interface LotSizesRefresh {
+  ok: boolean;
+  lots?: Record<string, number>;
+  updated?: string;
+  applied?: Record<string, number>;
+  error?: string;
 }

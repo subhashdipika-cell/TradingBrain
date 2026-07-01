@@ -7,7 +7,10 @@ const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 export function ForwardTestPanel() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [maxPolls, setMaxPolls] = useState(30);
-  const [singleStrategy, setSingleStrategy] = useState(false);
+  const [strategy, setStrategy] = useState("AUTO");
+  const [strategies, setStrategies] = useState<{ name: string; description: string }[]>([
+    { name: "AUTO", description: "Auto-select by market structure/regime" },
+  ]);
   const [status, setStatus] = useState<ForwardTestStatus | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -18,6 +21,7 @@ export function ForwardTestPanel() {
 
   useEffect(() => {
     fetchStatus();
+    api.strategies().then((r) => setStrategies(r.strategies)).catch(() => undefined);
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
@@ -40,7 +44,7 @@ export function ForwardTestPanel() {
       const r = await api.runForwardTest({
         symbol,
         max_polls: maxPolls,
-        single_strategy: singleStrategy,
+        strategy,
       });
       setMsg(
         r.note ??
@@ -94,13 +98,15 @@ export function ForwardTestPanel() {
         />
       </label>
 
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={singleStrategy}
-          onChange={(e) => setSingleStrategy(e.target.checked)}
-        />
-        TB001 only (skip regime selector)
+      <label>
+        Strategy
+        <select value={strategy} onChange={(e) => setStrategy(e.target.value)}>
+          {strategies.map((s) => (
+            <option key={s.name} value={s.name} title={s.description}>
+              {s.name === "AUTO" ? "AUTO — by market structure" : `${s.name} · ${s.description}`}
+            </option>
+          ))}
+        </select>
       </label>
 
       <button type="submit" disabled={running}>

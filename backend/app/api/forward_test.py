@@ -36,10 +36,11 @@ _lock = threading.Lock()
 
 class ForwardTestRequest(BaseModel):
     symbol: str = "NIFTY"
-    starting_capital: float = Field(default=1_000_000.0, gt=0)
+    starting_capital: float = Field(default=400_000.0, gt=0)
     max_polls: int = Field(default=30, ge=1, le=5000,
                            description="Stop after N option-chain polls so the run ends and saves.")
-    single_strategy: bool = False
+    # "AUTO" = structure-aware regime selection; or a specific strategy TB001..TB006.
+    strategy: str = "AUTO"
 
 
 def _market_open() -> bool:
@@ -50,11 +51,11 @@ def _now() -> str:
     return datetime.now(IST).isoformat(timespec="seconds")
 
 
-def _worker(symbol: str, capital: float, use_selector: bool, max_polls: int) -> None:
+def _worker(symbol: str, capital: float, strategy: str, max_polls: int) -> None:
     try:
         run_id = run_forward_test(
             symbol=symbol, starting_capital=capital,
-            use_selector=use_selector, max_polls=max_polls,
+            strategy=strategy, max_polls=max_polls,
         )
         with _lock:
             _state.update(last_run_id=run_id, error=None)
@@ -79,7 +80,7 @@ async def start_forward_test(request: ForwardTestRequest) -> dict[str, object]:
     threading.Thread(
         target=_worker,
         args=(request.symbol, request.starting_capital,
-              not request.single_strategy, request.max_polls),
+              request.strategy, request.max_polls),
         daemon=True,
     ).start()
 

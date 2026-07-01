@@ -8,10 +8,11 @@ import { DailyReport } from "./components/DailyReport";
 import { EquityChart } from "./components/EquityChart";
 import { ForwardTestPanel } from "./components/ForwardTestPanel";
 import { HealthBadge } from "./components/HealthBadge";
+import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryCards } from "./components/SummaryCards";
 import { TradesTable } from "./components/TradesTable";
 
-type Tab = "run" | "analysis" | "reports";
+type Tab = "run" | "analysis" | "reports" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("run");
@@ -63,6 +64,12 @@ export default function App() {
         >
           Reports
         </button>
+        <button
+          className={tab === "settings" ? "tab active" : "tab"}
+          onClick={() => setTab("settings")}
+        >
+          Settings
+        </button>
       </nav>
 
       {tab === "run" && (
@@ -112,6 +119,12 @@ export default function App() {
       {tab === "reports" && (
         <main>
           <DailyReport />
+        </main>
+      )}
+
+      {tab === "settings" && (
+        <main>
+          <SettingsPanel />
         </main>
       )}
     </div>

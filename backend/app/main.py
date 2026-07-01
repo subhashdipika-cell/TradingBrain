@@ -5,6 +5,7 @@ from app.api.backtest import router as backtest_router
 from app.api.database import router as database_router
 from app.api.forward_test import router as forward_test_router
 from app.api.health import router as health_router
+from app.api.instruments import router as instruments_router
 from app.api.reports import router as reports_router
 from app.api.results import router as results_router
 from app.core.config import settings
@@ -110,6 +111,11 @@ app.include_router(
 
 app.include_router(
     reports_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    instruments_router,
     prefix=settings.API_V1_PREFIX,
 )
 

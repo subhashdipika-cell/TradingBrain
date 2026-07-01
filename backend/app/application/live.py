@@ -96,7 +96,7 @@ class LivePaperTrader:
         broker: Broker | None = None,
         strategy: BaseStrategy | None = None,
         use_selector: bool = False,
-        starting_capital: float = 1_000_000.0,
+        starting_capital: float = 400_000.0,
         bar_minutes: int = 1,
         execution_mode: ExecutionMode = ExecutionMode.PAPER,
         context_enricher=None,
@@ -140,8 +140,9 @@ class LivePaperTrader:
         client_id: str,
         access_token: str,
         symbol: str = "NIFTY",
-        starting_capital: float = 1_000_000.0,
+        starting_capital: float = 400_000.0,
         use_selector: bool = True,
+        strategy: BaseStrategy | None = None,
         max_polls: int | None = None,
         enable_ict: bool = True,
         log: logging.Logger | None = None,
@@ -180,6 +181,7 @@ class LivePaperTrader:
 
         return cls.build(
             feed=feed,
+            strategy=strategy,
             use_selector=use_selector,
             starting_capital=starting_capital,
             execution_mode=ExecutionMode.PAPER,
