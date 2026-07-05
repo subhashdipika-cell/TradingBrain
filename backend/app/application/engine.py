@@ -46,6 +46,11 @@ from app.domains.strategy.contracts.signal import Signal
 from app.domains.strategy.contracts.strategy import BaseStrategy
 
 
+# No NEW entries at/after this time (IST session time) — trades are squared
+# off at 15:15 (strategy configs), so later entries would be near-instant exits.
+ENTRY_CUTOFF = time(15, 5)
+
+
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
     """Engine-level execution settings."""
@@ -65,6 +70,8 @@ class _Leg:
     right: OptionRight
     strike: float
     side: str  # "BUY" (hedge/long) or "SELL" (write/short)
+    lots: int = 0  # per-leg lots (calendar legs carry their own ratio)
+    bucket: str = "near"  # "near" or "far" expiry (calendar strategies)
 
 
 @dataclass(slots=True)
@@ -90,6 +97,10 @@ class _OpenTrade:
     # Directional (DEBIT) exits are driven by the underlying spot levels.
     underlying_stop: float | None = None
     underlying_target: float | None = None
+    # Calendar (CALENDAR) exits are driven by absolute rupee PnL vs margin.
+    margin: float = 0.0
+    profit_target: float = 0.0  # rupees; bank and leave
+    max_loss_rupees: float = 0.0  # rupees; hard stop
 
 
 class TradingEngine:
@@ -131,7 +142,7 @@ class TradingEngine:
         self._open_trade: _OpenTrade | None = None
         self._position_strategy: BaseStrategy | None = None
         self._current_day: date | None = None
-        self._recent_candles: list = []   # rolling window for structure indicators
+        self._recent_candles: list = []  # rolling window for structure indicators
 
     # ------------------------------------------------------------------
     # Strategy resolution (single strategy or regime-based selector)
@@ -213,6 +224,11 @@ class TradingEngine:
             return
 
         if self._open_trade is None:
+            # Platform-wide intraday entry cutoff: no NEW positions at/after
+            # 15:05 — every structure is squared off by 15:15, ahead of the
+            # 15:30 NSE close, so a late entry would be closed almost at once.
+            if snapshot.timestamp.time() >= ENTRY_CUTOFF:
+                return
             active = self._select_for_entry(context)
             if active is None:
                 return  # regime has no strategy mapped -> sit out
@@ -229,6 +245,10 @@ class TradingEngine:
         self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
     ) -> None:
         meta = signal.metadata
+        if isinstance(meta.get("calendar_legs"), list) and meta["calendar_legs"]:
+            # Two-expiry calendar structure (TB008).
+            self._open_calendar(signal, snapshot, strategy)
+            return
         leg_specs = meta.get("legs")
         if not isinstance(leg_specs, list) or not leg_specs:
             # No explicit legs -> treat a directional signal as a long option
@@ -434,6 +454,112 @@ class TradingEngine:
             f"target {signal.take_profit})",
         )
 
+    def _open_calendar(
+        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+    ) -> None:
+        """
+        Execute a two-expiry calendar structure (TB008). Near legs price/fill on
+        the near chain, far legs on the next-expiry chain. The structure's own
+        ratio is placed as-is, scaled by how many copies fit the margin budget.
+        """
+        meta = signal.metadata
+        spec = snapshot.spec
+        lot_size = spec.lot_size
+        base_margin = float(meta.get("margin", 0.0))
+        if base_margin <= 0:
+            strategy.reset()
+            return
+
+        budget = self.portfolio.capital.starting_capital * (
+            signal.requested_risk or self.config.capital_allocation
+        )
+        mult = int(budget // base_margin)
+        if mult < 1:
+            self.journal.record_event(
+                snapshot.timestamp, "Calendar skipped: margin exceeds budget"
+            )
+            strategy.reset()
+            return
+
+        gate = self.risk.approve_entry(self.portfolio, new_capital=base_margin * mult)
+        if not gate.approved:
+            self.journal.record_event(
+                snapshot.timestamp, f"Entry blocked: {gate.reason}"
+            )
+            strategy.reset()
+            return
+
+        realized_start = self.portfolio.realized_pnl()
+
+        # Build legs; submit hedges (BUY) before writes (SELL).
+        legs: list[_Leg] = []
+        for spec_leg in meta["calendar_legs"]:
+            right = self._right(spec_leg["right"])
+            bucket = str(spec_leg.get("expiry_bucket", "near"))
+            legs.append(
+                _Leg(
+                    instrument=self._instrument(
+                        spec.symbol, float(spec_leg["strike"]), right, bucket
+                    ),
+                    right=right,
+                    strike=float(spec_leg["strike"]),
+                    side=str(spec_leg["side"]).upper(),
+                    lots=int(spec_leg["lots"]) * mult,
+                    bucket=bucket,
+                )
+            )
+
+        entry_commission = 0.0
+        for leg in sorted(legs, key=lambda x: 0 if x.side == "BUY" else 1):
+            units = leg.lots * lot_size
+            fill = self.broker.submit(
+                Order(
+                    symbol=spec.symbol,
+                    instrument=leg.instrument,
+                    quantity=units if leg.side == "BUY" else -units,
+                    right=leg.right,
+                    strike=leg.strike,
+                    expiry_bucket=leg.bucket,
+                    tag=f"{strategy.name}_ENTRY_{leg.side}_{leg.bucket}",
+                ),
+                snapshot,
+            )
+            if fill is None:
+                continue
+            self._book_fill(fill, leg.right, leg.strike)
+            entry_commission += fill.commission
+
+        profit_target = float(meta.get("profit_target", 0.0)) * mult
+        max_loss = abs(float(meta.get("max_loss", 0.0))) * mult
+
+        self._open_trade = _OpenTrade(
+            structure=str(meta.get("structure", "DOUBLE_CALENDAR")),
+            symbol=spec.symbol,
+            body_strike=snapshot.spot,
+            lots=mult,
+            units=0,
+            entry_time=snapshot.timestamp,
+            entry_credit=0.0,
+            target_credit=0.0,
+            stop_credit=0.0,
+            square_off=time(15, 15),
+            realized_start=realized_start,
+            entry_commission=entry_commission,
+            legs=legs,
+            kind="CALENDAR",
+            strategy_name=strategy.name,
+            margin=base_margin * mult,
+            profit_target=profit_target,
+            max_loss_rupees=max_loss,
+        )
+        self._position_strategy = strategy
+        self.risk.record_trade()
+        self.journal.record_event(
+            snapshot.timestamp,
+            f"ENTER {self._open_trade.structure} {spec.symbol} x{mult} "
+            f"(margin Rs {base_margin * mult:,.0f}, target Rs {profit_target:,.0f})",
+        )
+
     def _manage_open_trade(
         self, snapshot: MarketSnapshot, context: MarketContext
     ) -> None:
@@ -441,7 +567,13 @@ class TradingEngine:
         assert trade is not None
 
         reason: ExitReason | None = None
-        if trade.kind == "DEBIT":
+        if trade.kind == "CALENDAR":
+            unrealized = self.portfolio.unrealized_pnl()
+            if unrealized >= trade.profit_target > 0:
+                reason = ExitReason.TARGET
+            elif trade.max_loss_rupees > 0 and unrealized <= -trade.max_loss_rupees:
+                reason = ExitReason.STOP_LOSS
+        elif trade.kind == "DEBIT":
             reason = self._directional_exit(snapshot, trade)
         else:
             cost_to_close = self._cost_to_close(snapshot, trade)
@@ -486,13 +618,16 @@ class TradingEngine:
         if trade is None:
             return
 
+        lot_size = snapshot.spec.lot_size
         # Close SHORT (written) legs first so the position never becomes more
         # naked during unwind, then close the long hedges.
         ordered = sorted(trade.legs, key=lambda leg: 0 if leg.side == "SELL" else 1)
         exit_commission = 0.0
         for leg in ordered:
-            # Reverse the entry: buy back shorts, sell longs.
-            qty = trade.units if leg.side == "SELL" else -trade.units
+            # Calendar legs carry their own lots (ratio); other structures use
+            # the single per-structure unit count.
+            units = leg.lots * lot_size if trade.kind == "CALENDAR" else trade.units
+            qty = units if leg.side == "SELL" else -units
             fill = self.broker.submit(
                 Order(
                     symbol=trade.symbol,
@@ -500,7 +635,8 @@ class TradingEngine:
                     quantity=qty,
                     right=leg.right,
                     strike=leg.strike,
-                    tag=f"TB001_EXIT_{leg.side}",
+                    expiry_bucket=leg.bucket,
+                    tag=f"{trade.strategy_name}_EXIT_{leg.side}",
                 ),
                 snapshot,
             )
@@ -551,10 +687,22 @@ class TradingEngine:
         drifted out of the chain window) keeps a hedged structure's MTM
         balanced instead of looking spuriously naked.
         """
-        for position in self.portfolio.open_positions():
-            if position.strike is None or position.right is None:
-                continue
-            position.mark(snapshot.option_price(position.right, position.strike))
+        trade = self._open_trade
+        if trade is not None and trade.kind == "CALENDAR":
+            # Price far legs against the next-expiry chain (not the near one).
+            for leg in trade.legs:
+                pos = self.portfolio.holdings.get(leg.instrument)
+                if pos is not None:
+                    pos.mark(
+                        snapshot.option_price(
+                            leg.right, leg.strike, far=leg.bucket == "far"
+                        )
+                    )
+        else:
+            for position in self.portfolio.open_positions():
+                if position.strike is None or position.right is None:
+                    continue
+                position.mark(snapshot.option_price(position.right, position.strike))
         self.portfolio.capital.update_high_water_mark(self.portfolio.unrealized_pnl())
 
     def _book_fill(self, fill, right: OptionRight, strike: float) -> None:
@@ -586,8 +734,14 @@ class TradingEngine:
             net += price if leg.side == "SELL" else -price
         return net
 
-    def _instrument(self, symbol: str, strike: float, right: OptionRight) -> str:
-        return f"{symbol}{strike:.0f}{right.value[0]}E"
+    def _instrument(
+        self, symbol: str, strike: float, right: OptionRight, bucket: str = "near"
+    ) -> str:
+        # Far legs get a suffix so near/far same-strike legs are distinct
+        # positions (a calendar can be short near CE and long far CE at the
+        # same strike).
+        suffix = "_F" if bucket == "far" else ""
+        return f"{symbol}{strike:.0f}{right.value[0]}E{suffix}"
 
     @staticmethod
     def _right(value: object) -> OptionRight:
@@ -612,6 +766,7 @@ class TradingEngine:
             high_price=snapshot.candle.high,
             low_price=snapshot.candle.low,
             implied_volatility=snapshot.implied_vol,
+            vix=snapshot.vix,
             is_market_open=self.session.is_open(ts),
             is_expiry=(snapshot.expiry == ts.date()),
             minutes_from_open=self.session.minutes_from_open(ts),
@@ -619,6 +774,9 @@ class TradingEngine:
         )
         context.metadata["option_chain"] = snapshot.option_chain
         context.metadata["strike_step"] = spec.strike_step
+        context.metadata["lot_size"] = spec.lot_size
+        if snapshot.far_chain is not None:
+            context.metadata["option_chain_far"] = snapshot.far_chain
 
         # ── Market structure from indicators (drives regime + strategy routing) ──
         self._recent_candles.append(snapshot.candle)

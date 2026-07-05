@@ -43,8 +43,8 @@ def rsi(closes: list[float], period: int = 14) -> float | None:
 def _true_ranges(candles: list) -> list[float]:
     trs = []
     for i in range(1, len(candles)):
-        h, l, pc = candles[i].high, candles[i].low, candles[i - 1].close
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        h, lo, pc = candles[i].high, candles[i].low, candles[i - 1].close
+        trs.append(max(h - lo, abs(h - pc), abs(lo - pc)))
     return trs
 
 
@@ -65,8 +65,8 @@ def adx(candles: list, period: int = 14) -> float | None:
         dn = candles[i - 1].low - candles[i].low
         plus_dm.append(up if (up > dn and up > 0) else 0.0)
         minus_dm.append(dn if (dn > up and dn > 0) else 0.0)
-        h, l, pc = candles[i].high, candles[i].low, candles[i - 1].close
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        h, lo, pc = candles[i].high, candles[i].low, candles[i - 1].close
+        trs.append(max(h - lo, abs(h - pc), abs(lo - pc)))
 
     dxs = []
     for j in range(period, len(trs) + 1):

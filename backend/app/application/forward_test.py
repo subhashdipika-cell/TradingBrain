@@ -78,6 +78,14 @@ def run_forward_test(
     key = symbol.upper()
     if key not in _UNDERLYING:
         raise ValueError(f"No Dhan underlying id mapped for symbol '{symbol}'.")
+
+    # Daily first-run holiday verification (Dhan holiday calendar, cached per
+    # IST day) — don't start a live paper session on a closed market.
+    from app.domains.market.holidays import trading_day_check
+    ok_day, why = trading_day_check()
+    if not ok_day:
+        raise RuntimeError(f"Forward test refused: {why}")
+
     security_id, segment = _UNDERLYING[key]
     client_id, access_token = _load_credentials()
 

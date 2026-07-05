@@ -2,6 +2,68 @@
 
 All notable changes to TradingBrain will be documented here.
 
+## TB-013 - NSE holiday calendar + intraday entry cutoff (2026-07-05)
+
+- **Holiday calendar** (`app/domains/market/holidays.py`): NSE trading
+  holidays refreshed once per IST day from Dhan's public holiday page
+  (https://dhan.co/market-holiday/ — only the trading-holiday table; clearing
+  holidays are normal trading days), cached to disk, hardcoded 2026 fallback.
+  `run_forward_test` now refuses to start on weekends/holidays with a clear
+  reason (surfaces in `/forward-test/status`).
+- **Entry cutoff**: platform-wide `ENTRY_CUTOFF = 15:05` in the engine bar
+  loop — no NEW positions after 15:05 IST (square-off remains 15:15, NSE
+  close 15:30), applied identically in backtests and live/forward runs.
+
+## TB-012 - TB008 two-expiry execution + India VIX (2026-07-03)
+
+- **Multi-expiry snapshot**: `MarketSnapshot` now carries an optional
+  next-expiry chain (`far_chain`, `far_expiry`, `far_time_to_expiry`) and a real
+  `vix` field. `option_price(right, strike, far=True)` prices/marks a leg against
+  the far chain + its time-to-expiry, so calendar legs are consistent across
+  both expiries.
+- **India VIX wired end to end**: `DhanFeed._get_vix` fetches real India VIX via
+  `intraday_minute_data` (security_id 21, IDX_I / INDEX), throttled
+  (`vix_refresh_seconds`). It flows snapshot.vix -> `MarketContext.vix` ->
+  TB008. When VIX is unavailable (0.0) the strategy falls back to an ATM-focused
+  IV proxy; the Dhan ATM-IV average is now taken only over strikes within +-2 of
+  ATM (skew fix), not the whole wide window.
+- **Engine CALENDAR path**: `_open_calendar` sizes by `budget // margin`, builds
+  near/far legs (far instruments get an `_F` suffix to avoid key collisions),
+  submits BUY hedges before SELLs, and records margin / 1%-of-margin profit
+  target / max-loss. `_manage_open_trade` exits a calendar on rupee PnL vs
+  target/stop; `_mark_portfolio` marks each leg against its own expiry bucket.
+  `Order` carries `expiry_bucket`; `PaperBroker` prices far fills correctly.
+- **Feeds**: `BacktestFeed(include_far, strikes_each_side)` emits a synthetic
+  next-expiry chain; `DhanFeed(include_far=...)` resolves near + far expiries.
+  `LivePaperTrader.from_dhan` turns both on automatically for TB008 (wider
+  `atm_range=40` for the ~2-delta strikes).
+- **Forward test**: `ForwardTest(TB008).bat` runs TB008 with Rs 10L capital
+  (calendar margin ~Rs 2L/structure). Verified end to end: 13 double-calendar
+  trades through the engine, correct two-expiry marking, TARGET/TIME_EXIT exits.
+- Tests: +1 engine E2E (`test_tb008_engine`), TB008 suite 8; 110 passing,
+  1 skipped. Ruff + black clean.
+
+## TB-011 - TB008 Adaptive Calendar Spread Engine (2026-07-03)
+
+- New strategy `app/domains/strategy/tb008` (ACSE): low-VIX double-calendar
+  income - sell a far-OTM (~2-delta) strangle on the near expiry, hedge with a
+  next-expiry RATIO calendar to flatten MTM, analyse the payoff, bank ~1%
+  weekly early. Full layer set per the design: constants, exceptions, models,
+  configuration, regime (VIX classifier), payoff_engine (central), core_layer,
+  hedging_layer, risk_layer, position_manager, state_machine, strategy, plus a
+  delta-based selection helper.
+- **Payoff engine** evaluates the structure at the near expiry (near legs ->
+  intrinsic, far legs -> BS time value): max profit/loss, breakevens, profit
+  band, margin (~Rs 2L for NIFTY 3-lot, matches source), margin efficiency and
+  MTM smoothness. Verified: bounded loss, smoothness ~0.87.
+- Registered in the selector (available for `--strategy TB008`), but NOT
+  auto-routed: it needs BOTH near + next-expiry chains
+  (`context.metadata['option_chain']` + `['option_chain_far']`). With the
+  current single-expiry feed it stands aside safely (never mis-executes). A
+  multi-expiry feed unlocks live execution.
+- Tests: 7 for TB008 (regime gating, structure build, payoff, exit, registry);
+  109 total passing.
+
 ## TB-010 - Dhan candle feed for live ICT (2026-06-30)
 
 - **Dhan candles**: `DhanCandleFeed` (`intraday_minute_data`) + module-level

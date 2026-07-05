@@ -36,6 +36,7 @@ class Order:
     limit_price: float | None = None
     right: OptionRight | None = None
     strike: float | None = None
+    expiry_bucket: str = "near"  # "near" or "far" (calendar strategies)
     tag: str = ""
 
     @property

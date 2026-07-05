@@ -133,8 +133,9 @@ def register_all_strategies() -> None:
     from app.domains.strategy.credit_sellers import CREDIT_STRATEGIES
     from app.domains.strategy.tb001 import TB001Strategy
     from app.domains.strategy.tb002 import TB002Strategy
+    from app.domains.strategy.tb008 import TB008Strategy
 
-    for cls in (TB001Strategy, TB002Strategy, *CREDIT_STRATEGIES):
+    for cls in (TB001Strategy, TB002Strategy, TB008Strategy, *CREDIT_STRATEGIES):
         if not StrategyRegistry.exists(cls.name):
             StrategyRegistry.register(cls)
 

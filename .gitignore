@@ -56,3 +56,6 @@ dist/
 # ---------- Misc ----------
 *.tmp
 *.bak
+
+# ---------- Runtime caches ----------
+backend/app/domains/market/nse_holidays_cache.json

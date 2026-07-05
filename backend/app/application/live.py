@@ -151,10 +151,14 @@ class LivePaperTrader:
         Live paper trading on a Dhan feed (real data) with simulated fills.
         Regime-based strategy activation is on by default; ``enable_ict`` wires
         a live Dhan-candle ICT detector so TB002 can fire on real structure.
-        Requires ``pip install dhanhq`` + a valid token.
+        When the single strategy is TB008, the feed also pulls the next-expiry
+        chain (calendar) with a wider strike window. Requires ``dhanhq`` + token.
         """
         from app.domains.execution.adapters.dhan_adapter import DhanFeed
         from app.domains.market.symbol import get_instrument
+
+        # TB008 needs the next-expiry chain + far-OTM (~2-delta) strikes.
+        is_calendar = strategy is not None and getattr(strategy, "name", "") == "TB008"
 
         spec = get_instrument(symbol)
         feed = DhanFeed(
@@ -164,6 +168,8 @@ class LivePaperTrader:
             client_id=client_id,
             access_token=access_token,
             max_polls=max_polls,
+            include_far=is_calendar,
+            atm_range=40 if is_calendar else 5,
         )
 
         enricher = None

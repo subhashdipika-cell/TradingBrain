@@ -30,7 +30,6 @@ from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.limits import RiskLimits
 from app.domains.risk.position_sizing import PositionSizer
 from app.domains.risk.risk_engine import RiskEngine
-from app.domains.strategy.tb001 import TB001Strategy
 
 
 @dataclass(frozen=True, slots=True)

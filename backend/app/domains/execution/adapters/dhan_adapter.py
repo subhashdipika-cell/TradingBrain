@@ -87,6 +87,9 @@ class DhanFeed(DataFeed):
         poll_seconds: float = 3.5,  # Dhan option-chain limit ~1 req / 3s
         rate: float = 0.065,
         max_polls: int | None = None,
+        include_far: bool = False,
+        vix_security_id: int = 21,  # Dhan India VIX index (verify via lookup)
+        vix_refresh_seconds: float = 60.0,
     ) -> None:
         self._spec = spec
         self._security_id = security_id
@@ -98,6 +101,14 @@ class DhanFeed(DataFeed):
         self._poll_seconds = poll_seconds
         self._rate = rate
         self._max_polls = max_polls
+        # Also fetch the NEXT expiry chain (for calendar strategies, TB008).
+        # A wider atm_range is used so far-OTM (~2-delta) strikes are present.
+        self._include_far = include_far
+        # Real India VIX (throttled) so TB008's regime gate is trustworthy.
+        self._vix_security_id = vix_security_id
+        self._vix_refresh_seconds = vix_refresh_seconds
+        self._vix_value = 0.0
+        self._vix_fetched_at = 0.0
         self._client = None
 
     @property
@@ -110,32 +121,40 @@ class DhanFeed(DataFeed):
             self._client = build_dhan_client(self._client_id, self._access_token)
         return self._client
 
-    def nearest_expiry(self) -> str | None:
+    def expiries(self) -> list[str]:
+        """Future expiries (ascending); [0]=near weekly, [1]=next weekly, ..."""
         client = self._ensure_client()
         data = _unwrap(client.expiry_list(self._security_id, self._segment))
         expiries = data.get("data") if isinstance(data.get("data"), list) else None
         if not expiries:
-            return None
+            return []
         today = datetime.now(_IST).strftime("%Y-%m-%d")
-        future = [e for e in expiries if str(e) >= today]
-        return (future or expiries)[0]
+        future = sorted(e for e in expiries if str(e) >= today)
+        return future or sorted(expiries)
+
+    def nearest_expiry(self) -> str | None:
+        found = self.expiries()
+        return found[0] if found else None
 
     def stream(self) -> Iterator[MarketSnapshot]:
         client = self._ensure_client()
-        expiry = self._expiry or self.nearest_expiry()
-        if expiry is None:
+        found = self.expiries()
+        near = self._expiry or (found[0] if found else None)
+        if near is None:
             raise RuntimeError("DhanFeed: could not resolve an expiry.")
+        far = found[1] if (self._include_far and len(found) > 1) else None
 
         polls = 0
         while self._max_polls is None or polls < self._max_polls:
-            snapshot = self._poll_once(client, expiry)
+            snapshot = self._poll_once(client, near, far)
             if snapshot is not None:
                 yield snapshot
             polls += 1
             _time.sleep(self._poll_seconds)
 
     # ------------------------------------------------------------------
-    def _poll_once(self, client, expiry: str) -> MarketSnapshot | None:
+    def _build_chain(self, client, expiry: str):
+        """Return (OptionChain, avg_iv, tte, expiry_date, under_ltp) or None."""
         data = _unwrap(client.option_chain(self._security_id, self._segment, expiry))
         if "_error" in data:
             return None
@@ -156,21 +175,24 @@ class DhanFeed(DataFeed):
         )
         strikes = sorted(oc_map.keys(), key=lambda s: float(s))
         atm_i = min(
-            range(len(strikes)),
-            key=lambda i: abs(float(strikes[i]) - under_ltp),
+            range(len(strikes)), key=lambda i: abs(float(strikes[i]) - under_ltp)
         )
         lo = max(0, atm_i - self._atm_range)
         hi = min(len(strikes), atm_i + self._atm_range + 1)
 
-        ivs: list[float] = []
-        for sk in strikes[lo:hi]:
+        # Only average IV across strikes NEAR the money (skew inflates far-OTM
+        # IV, which would bias the ATM-IV / VIX-proxy high).
+        atm_ivs: list[float] = []
+        for i in range(lo, hi):
+            sk = strikes[i]
             node = oc_map[sk]
             for typ, right in (("ce", OptionRight.CALL), ("pe", OptionRight.PUT)):
                 leg = node.get(typ) or {}
                 if not leg:
                     continue
                 iv = float(leg.get("implied_volatility", 0) or 0) / 100.0
-                ivs.append(iv)
+                if abs(i - atm_i) <= 2:
+                    atm_ivs.append(iv)
                 chain.add(
                     OptionQuote(
                         symbol=self._spec.symbol,
@@ -181,7 +203,48 @@ class DhanFeed(DataFeed):
                         underlying=under_ltp,
                     )
                 )
+        atm_iv = (sum(atm_ivs) / len(atm_ivs)) if atm_ivs else 0.0
+        return chain, atm_iv, tte, expiry_date, under_ltp
 
+    def _get_vix(self, client) -> float:
+        """Throttled India VIX read (last 1-min close). 0.0 on failure."""
+        now = _time.monotonic()
+        if self._vix_value and (now - self._vix_fetched_at) < self._vix_refresh_seconds:
+            return self._vix_value
+        try:
+            ist = datetime.now(_IST)
+            resp = client.intraday_minute_data(
+                security_id=str(self._vix_security_id),
+                exchange_segment="IDX_I",
+                instrument_type="INDEX",
+                from_date=(ist - timedelta(days=3)).strftime("%Y-%m-%d"),
+                to_date=ist.strftime("%Y-%m-%d"),
+                interval=1,
+            )
+            candles = candles_from_response(resp)
+            if candles:
+                self._vix_value = candles[-1].close
+                self._vix_fetched_at = now
+        except Exception:  # pragma: no cover - network/SDK errors
+            pass
+        return self._vix_value
+
+    def _poll_once(
+        self, client, near: str, far: str | None = None
+    ) -> MarketSnapshot | None:
+        built = self._build_chain(client, near)
+        if built is None:
+            return None
+        chain, atm_iv, tte, expiry_date, under_ltp = built
+
+        far_chain = far_expiry = None
+        far_tte = 0.0
+        if far is not None:
+            far_built = self._build_chain(client, far)
+            if far_built is not None:
+                far_chain, _, far_tte, far_expiry, _ = far_built
+
+        now = datetime.now(_IST).replace(tzinfo=None)
         candle = Candle(
             timestamp=now,
             open=under_ltp,
@@ -193,10 +256,14 @@ class DhanFeed(DataFeed):
             timestamp=now,
             spec=self._spec,
             candle=candle,
-            implied_vol=(sum(ivs) / len(ivs)) if ivs else 0.0,
+            implied_vol=atm_iv,
             expiry=expiry_date,
             time_to_expiry=tte,
             option_chain=chain,
+            far_chain=far_chain,
+            far_expiry=far_expiry,
+            far_time_to_expiry=far_tte,
+            vix=self._get_vix(client),
         )
 
     def _greeks(
