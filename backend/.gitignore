@@ -1,0 +1,6 @@
+
+# Backtest / forward-test run results
+results/
+
+# Runtime lot-size overrides (fetched from Dhan)
+app/domains/market/lot_overrides.json
