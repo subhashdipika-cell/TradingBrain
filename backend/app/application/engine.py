@@ -50,6 +50,12 @@ from app.domains.strategy.contracts.strategy import BaseStrategy
 # off at 15:15 (strategy configs), so later entries would be near-instant exits.
 ENTRY_CUTOFF = time(15, 5)
 
+# No NEW entries BEFORE this time either. Cross-app trade audit (Jun–Jul 2026):
+# TB001 IRON_FLY lost Rs 1.21L of its Rs 1.34L total in the 09:15–10:15 open
+# window (126 of 139 trades) — the third independent dataset (after the Dhan
+# and Stocko live audits) condemning the volatile open. Let it settle first.
+ENTRY_OPEN_CUTOFF = time(10, 15)
+
 
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
@@ -224,10 +230,12 @@ class TradingEngine:
             return
 
         if self._open_trade is None:
-            # Platform-wide intraday entry cutoff: no NEW positions at/after
-            # 15:05 — every structure is squared off by 15:15, ahead of the
-            # 15:30 NSE close, so a late entry would be closed almost at once.
-            if snapshot.timestamp.time() >= ENTRY_CUTOFF:
+            # Platform-wide intraday entry window: no NEW positions before
+            # 10:15 (the open window destroyed IRON_FLY — see ENTRY_OPEN_CUTOFF)
+            # or at/after 15:05 (everything is squared off by 15:15, ahead of
+            # the 15:30 NSE close, so a late entry would be closed at once).
+            bar_time = snapshot.timestamp.time()
+            if bar_time < ENTRY_OPEN_CUTOFF or bar_time >= ENTRY_CUTOFF:
                 return
             active = self._select_for_entry(context)
             if active is None:
