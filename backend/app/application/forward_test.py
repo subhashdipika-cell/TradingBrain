@@ -89,6 +89,20 @@ def run_forward_test(
     security_id, segment = _UNDERLYING[key]
     client_id, access_token = _load_credentials()
 
+    # strategy="BRAIN": the Daily Brain confirms the regime from the last 2-3
+    # days of behaviour and picks today's strategy from its learned memory
+    # (see intelligence/daily_brain.py). It may refuse to trade (STAND_ASIDE).
+    brain_mode = (strategy or "").upper() == "BRAIN"
+    if brain_mode:
+        from app.domains.intelligence import daily_brain
+        p = daily_brain.plan()
+        if p["strategy"] == "STAND_ASIDE":
+            raise RuntimeError(
+                f"Brain says STAND ASIDE today ({p['regime']}): {p['reason']}")
+        strategy = p["strategy"]
+        log.info("Brain plan %s: regime=%s -> strategy=%s (%s)",
+                 p["date"], p["regime"], strategy, p["reason"])
+
     auto = (strategy or "AUTO").upper() == "AUTO"
     strat_obj = None
     if not auto:
@@ -127,6 +141,20 @@ def run_forward_test(
     log.info(
         "Saved forward-test result %s (net Rs %.0f)", summary.id, summary.net_return
     )
+
+    # Feed the realized day result back into the Daily Brain's regime memory —
+    # this is how the brain LEARNS which strategy pays in which regime. Every
+    # forward-test outcome counts as evidence, not only brain-chosen runs.
+    try:
+        from app.domains.intelligence import daily_brain
+        strat_used = "AUTO(regime)" if auto else str(strategy)
+        if not auto:
+            upd = daily_brain.record_outcome(
+                strat_used, summary.net_return / starting_capital * 100.0)
+            log.info("Brain memory updated: %s", upd)
+    except Exception as exc:  # noqa: BLE001 — learning must not break the run
+        log.warning("Brain outcome recording failed: %s", exc)
+
     return summary.id
 
 

@@ -59,3 +59,4 @@ dist/
 
 # ---------- Runtime caches ----------
 backend/app/domains/market/nse_holidays_cache.json
+backend/app/data/

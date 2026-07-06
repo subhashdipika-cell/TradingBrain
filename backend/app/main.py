@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.backtest import router as backtest_router
+from app.api.brain import router as brain_router
 from app.api.database import router as database_router
 from app.api.forward_test import router as forward_test_router
 from app.api.health import router as health_router
@@ -116,6 +117,11 @@ app.include_router(
 
 app.include_router(
     instruments_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    brain_router,
     prefix=settings.API_V1_PREFIX,
 )
 
