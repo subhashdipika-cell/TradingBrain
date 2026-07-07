@@ -105,7 +105,17 @@ export function History() {
       byStrategy.set(k, s);
     }
     const best = [...byStrategy.entries()].sort((a, b) => b[1].net - a[1].net)[0];
-    return { wins, net, byStrategy, best };
+    // Daily / current-month P&L (engine timestamps are IST session times)
+    const now = new Date();
+    const istToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Kolkata" }).format(now);
+    const istMonth = istToday.slice(0, 7);
+    const dayNet = rows
+      .filter((t) => (t.exit_time || "").slice(0, 10) === istToday)
+      .reduce((a, t) => a + t.pnl, 0);
+    const monthNet = rows
+      .filter((t) => (t.exit_time || "").slice(0, 7) === istMonth)
+      .reduce((a, t) => a + t.pnl, 0);
+    return { wins, net, byStrategy, best, dayNet, monthNet };
   }, [rows]);
 
   return (
@@ -158,6 +168,18 @@ export function History() {
           <div style={tile}>
             <div style={tileLabel}>Win rate</div>
             <div style={tileValue}>{((100 * stats.wins) / rows.length).toFixed(1)}%</div>
+          </div>
+          <div style={tile}>
+            <div style={tileLabel}>Daily P/L</div>
+            <div style={tileValue} className={stats.dayNet >= 0 ? "pos" : "neg"}>
+              {formatINR(stats.dayNet)}
+            </div>
+          </div>
+          <div style={tile}>
+            <div style={tileLabel}>Month P/L</div>
+            <div style={tileValue} className={stats.monthNet >= 0 ? "pos" : "neg"}>
+              {formatINR(stats.monthNet)}
+            </div>
           </div>
           <div style={tile}>
             <div style={tileLabel}>Net P&amp;L</div>

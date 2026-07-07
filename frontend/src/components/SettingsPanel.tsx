@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
+import type { AutoTraderStatus } from "../api/types";
 
 export function SettingsPanel() {
   const [lots, setLots] = useState<Record<string, number>>({});
   const [updated, setUpdated] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [at, setAt] = useState<AutoTraderStatus | null>(null);
+  const [atBusy, setAtBusy] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -15,9 +18,22 @@ export function SettingsPanel() {
         setUpdated(d.updated ?? null);
       })
       .catch(() => undefined);
+    api.autoTraderStatus().then(setAt).catch(() => setAt(null));
   }, []);
 
   useEffect(load, [load]);
+
+  const toggleAutoTrader = async () => {
+    if (!at) return;
+    setAtBusy(true);
+    try {
+      setAt(await api.autoTraderToggle(!at.enabled));
+    } catch {
+      /* backend unreachable — status refresh below */
+    } finally {
+      setAtBusy(false);
+    }
+  };
 
   const refresh = async () => {
     setBusy(true);
@@ -39,6 +55,38 @@ export function SettingsPanel() {
   };
 
   return (
+    <>
+    <div className="card">
+      <div className="chart-header">
+        <h2>Autonomous forward testing</h2>
+        <button
+          className={at?.enabled ? "tab" : "tab active"}
+          onClick={toggleAutoTrader}
+          disabled={atBusy || !at}
+        >
+          {atBusy ? "…" : at?.enabled ? "■ Stop" : "▶ Start"}
+        </button>
+      </div>
+      <p className="hint">
+        When ON, the Daily Brain confirms the regime each trading day and runs a
+        forward test on its own inside the {at?.window ?? "10:20–14:30 IST"} entry
+        window (STAND_ASIDE days take no trade by decision). Starting while inside
+        the window triggers today&apos;s run immediately; stopping only prevents new
+        runs — one already in flight completes and saves.
+      </p>
+      {at && (
+        <p className="hint">
+          Status: <strong className={at.enabled ? "pos" : "neg"}>
+            {at.enabled ? "RUNNING DAILY" : "STOPPED"}
+          </strong>
+          {" · "}window {at.in_window ? "open now" : "closed now"}
+          {at.running && " · forward test in progress"}
+          {at.decision && ` · today: ${at.decision}`}
+        </p>
+      )}
+      {!at && <p className="hint neg">AutoTrader status unavailable — backend offline?</p>}
+    </div>
+
     <div className="card">
       <div className="chart-header">
         <h2>Index lot sizes</h2>
@@ -78,5 +126,6 @@ export function SettingsPanel() {
         </table>
       </div>
     </div>
+    </>
   );
 }

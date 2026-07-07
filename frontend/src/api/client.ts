@@ -1,4 +1,5 @@
 import type {
+  AutoTraderStatus,
   BacktestRequest,
   BacktestResponse,
   DailyReport,
@@ -75,6 +76,17 @@ export const api = {
 
   forwardTestStatus(): Promise<ForwardTestStatus> {
     return request<ForwardTestStatus>("/forward-test/status");
+  },
+
+  autoTraderStatus(): Promise<AutoTraderStatus> {
+    return request<AutoTraderStatus>("/auto-trader/status");
+  },
+
+  autoTraderToggle(enabled: boolean): Promise<AutoTraderStatus> {
+    return request<AutoTraderStatus>("/auto-trader/toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
   },
 
   dailyReport(date?: string): Promise<DailyReport> {

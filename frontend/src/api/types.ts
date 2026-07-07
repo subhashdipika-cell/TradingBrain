@@ -192,3 +192,12 @@ export interface LotSizesRefresh {
   applied?: Record<string, number>;
   error?: string;
 }
+
+export interface AutoTraderStatus {
+  enabled: boolean;
+  in_window: boolean;
+  window: string;
+  last_day: string | null;
+  decision: string | null;
+  running: boolean;
+}

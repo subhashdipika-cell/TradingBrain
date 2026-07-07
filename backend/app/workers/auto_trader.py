@@ -119,10 +119,40 @@ def _month_end_export() -> None:
         logger.warning("AutoTrader month-end export failed: %s", exc)
 
 
+def is_enabled() -> bool:
+    """Runtime switch — Settings page start/stop persists here; the
+    AUTO_FORWARD_TEST env value is only the default for a fresh state file."""
+    return bool(_state().get("enabled", settings.AUTO_FORWARD_TEST))
+
+
+def set_enabled(on: bool) -> dict:
+    _save(enabled=bool(on))
+    logger.info("AutoTrader %s from Settings.", "ENABLED" if on else "DISABLED")
+    if on:
+        # Start immediately when switched on inside the entry window (and the
+        # brain hasn't already decided today) instead of waiting for the tick.
+        threading.Thread(target=_tick, daemon=True).start()
+    return status()
+
+
+def status() -> dict:
+    st = _state()
+    now = datetime.now(IST)
+    mins = now.hour * 60 + now.minute
+    return {
+        "enabled": is_enabled(),
+        "in_window": WINDOW_START_MIN <= mins <= WINDOW_END_MIN,
+        "window": "10:20-14:30 IST",
+        "last_day": st.get("last_day"),
+        "decision": st.get("decision"),
+        "last_export_month": st.get("last_export_month"),
+    }
+
+
 def _loop() -> None:
     while True:
         try:
-            if settings.AUTO_FORWARD_TEST:
+            if is_enabled():
                 _tick()
             _month_end_export()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything

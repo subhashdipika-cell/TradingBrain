@@ -103,3 +103,31 @@ async def forward_test_status() -> dict[str, object]:
         st = dict(_state)
     st["market_open"] = _market_open()
     return st
+
+
+# ── AutoTrader (autonomous daily forward testing) control ────────────────────
+
+class AutoTraderToggle(BaseModel):
+    enabled: bool
+
+
+@router.get("/auto-trader/status")
+async def auto_trader_status() -> dict[str, object]:
+    """AutoTrader runtime state: enabled, entry window, today's decision."""
+    from app.workers import auto_trader
+    st = auto_trader.status()
+    with _lock:
+        st["running"] = _state["running"]
+    return st
+
+
+@router.post("/auto-trader/toggle")
+async def auto_trader_toggle(req: AutoTraderToggle) -> dict[str, object]:
+    """Start/stop autonomous forward testing. Starting inside the entry window
+    (10:20-14:30 IST) triggers today's brain run immediately; stopping only
+    prevents NEW runs — a forward test already in flight completes and saves."""
+    from app.workers import auto_trader
+    st = auto_trader.set_enabled(req.enabled)
+    with _lock:
+        st["running"] = _state["running"]
+    return st
