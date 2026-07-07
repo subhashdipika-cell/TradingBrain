@@ -92,11 +92,39 @@ def _tick() -> None:
     ).start()
 
 
+def _month_end_export() -> None:
+    """On the LAST day of each month, after the close (>=15:40 IST), write the
+    month's trade rollup to the Obsidian vault
+    (<OBSIDIAN_TRADES_DIR>/tradingbrain/<YYYY-MM>.md) — same output as the
+    History tab's Export -> Obsidian button, just automatic."""
+    now = datetime.now(IST)
+    month = now.strftime("%Y-%m")
+    if _state().get("last_export_month") == month:
+        return
+    is_last_day = (now + timedelta(days=1)).month != now.month
+    if not is_last_day or (now.hour * 60 + now.minute) < 15 * 60 + 40:
+        return
+    try:
+        from app.api.reports import _records
+        from app.domains.analytics import obsidian_export as ox
+        recs = _records(month=month)
+        if recs:
+            path = ox.write_export(month, ox.monthly_markdown(recs, month))
+            logger.info("AutoTrader: month-end Obsidian export -> %s (%d runs)",
+                        path, len(recs))
+        else:
+            logger.info("AutoTrader: month-end export skipped — no runs in %s", month)
+        _save(last_export_month=month)
+    except Exception as exc:  # noqa: BLE001 — retried next tick until the day ends
+        logger.warning("AutoTrader month-end export failed: %s", exc)
+
+
 def _loop() -> None:
     while True:
         try:
             if settings.AUTO_FORWARD_TEST:
                 _tick()
+            _month_end_export()
         except Exception as exc:  # noqa: BLE001 — the loop must survive anything
             logger.warning("AutoTrader tick failed: %s", exc)
         time.sleep(TICK_SECONDS)
