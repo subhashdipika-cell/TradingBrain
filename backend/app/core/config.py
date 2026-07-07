@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     # Where backtest/forward-test run results are persisted (JSON per run).
     RESULTS_DIR: str = "results"
 
+    # Autonomous forward trading (workers/auto_trader.py): once per trading
+    # day the Daily Brain picks the strategy and a forward test runs on its
+    # own inside the 10:20-14:30 IST window. STAND_ASIDE days are recorded,
+    # not traded. Set AUTO_FORWARD_TEST=false in .env to disable.
+    AUTO_FORWARD_TEST: bool = True
+    AUTO_FT_CAPITAL: float = 400_000.0
+    AUTO_FT_MAX_POLLS: int = 240
+
     # Obsidian vault "raw trades" root. TradingBrain writes its daily reports
     # and monthly rollups under <OBSIDIAN_TRADES_DIR>/tradingbrain/ for the vault
     # to ingest and analyse. Shared destination across the four trading apps.

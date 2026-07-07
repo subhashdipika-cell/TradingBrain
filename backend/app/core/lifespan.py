@@ -15,11 +15,14 @@ async def lifespan(app: FastAPI):
 
     logger.info("Starting TradingBrain Backend")
 
+    # Autonomous daily forward trading — brain-decided, hands-free.
+    from app.workers.auto_trader import start_auto_trader
+    start_auto_trader()
+
     # Future initialization:
     # - Database
     # - Redis
     # - Broker APIs
-    # - Scheduler
     # - WebSocket manager
 
     yield

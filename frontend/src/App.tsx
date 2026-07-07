@@ -11,8 +11,9 @@ import { HealthBadge } from "./components/HealthBadge";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryCards } from "./components/SummaryCards";
 import { TradesTable } from "./components/TradesTable";
+import { History } from "./components/History";
 
-type Tab = "run" | "analysis" | "reports" | "settings";
+type Tab = "run" | "analysis" | "history" | "reports" | "settings";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("run");
@@ -57,6 +58,12 @@ export default function App() {
           onClick={() => setTab("analysis")}
         >
           Analysis
+        </button>
+        <button
+          className={tab === "history" ? "tab active" : "tab"}
+          onClick={() => setTab("history")}
+        >
+          History
         </button>
         <button
           className={tab === "reports" ? "tab active" : "tab"}
@@ -115,6 +122,8 @@ export default function App() {
           <Analysis />
         </main>
       )}
+
+      {tab === "history" && <History />}
 
       {tab === "reports" && (
         <main>
