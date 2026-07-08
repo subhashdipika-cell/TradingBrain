@@ -77,7 +77,11 @@ class Settings(BaseSettings):
     # not traded. Set AUTO_FORWARD_TEST=false in .env to disable.
     AUTO_FORWARD_TEST: bool = True
     AUTO_FT_CAPITAL: float = 400_000.0
-    AUTO_FT_MAX_POLLS: int = 240
+    # Must span the entry window to the 15:15 square-off, else the run ends
+    # early and force-closes an open position (e.g. an iron fly held only 14
+    # min on 2026-07-08). At poll_seconds=3.5, a 10:20 start reaches 15:15 in
+    # ~5057 polls — 5200 lets the engine hit its OWN 15:15 square-off first.
+    AUTO_FT_MAX_POLLS: int = 5200
 
     # Obsidian vault "raw trades" root. TradingBrain writes its daily reports
     # and monthly rollups under <OBSIDIAN_TRADES_DIR>/tradingbrain/ for the vault
