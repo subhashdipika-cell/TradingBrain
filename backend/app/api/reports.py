@@ -102,8 +102,13 @@ async def export_monthly(month: str | None = Query(default=None)) -> dict[str, A
     m = month or _this_month()
     if not _MONTH_RE.match(m):
         raise HTTPException(status_code=400, detail="month must be YYYY-MM")
-    recs = _records(month=m)
+    # Monthly rollup = FORWARD TESTS WITH ACTUAL TRADES (the honest live-
+    # equivalent). Backtests are synthetic research; zero-trade runs (STAND_ASIDE
+    # days, or junk after-hours runs against a closed chain) carry a phantom
+    # equity swing with no real trade behind it and would skew the month's net.
+    recs = [r for r in _records(month=m)
+            if r.get("run_type") == "forward-test" and r.get("trades")]
     if not recs:
-        raise HTTPException(status_code=404, detail=f"No runs found for {m}.")
+        raise HTTPException(status_code=404, detail=f"No forward-test trades found for {m}.")
     path = ox.write_export(m, ox.monthly_markdown(recs, m))
     return {"ok": True, "path": path, "month": m, "runs": len(recs)}

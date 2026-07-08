@@ -203,22 +203,18 @@ def _runs_table(runs: list[dict[str, Any]]) -> str:
     return out
 
 
-# Approximate INR→USD rate — for the cross-app vault dashboard's unified
-# net_usd column ONLY. TradingBrain's true P&L is in INR (net_pnl / net_inr);
-# this conversion is a convenience so all four apps compare on one axis.
-INR_PER_USD = 83.0
-
-
 def _frontmatter(kind: str, key_field: str, key_value: str, agg: dict[str, Any], tags: list[str]) -> str:
     t = agg["totals"]
+    # TradingBrain trades Indian index options — reported in INR only. No USD
+    # conversion (the vault dashboard shows it in its own ₹ table).
     fm = [
         "---", f"type: {kind}", f"app: {settings.OBSIDIAN_APP}", f"{key_field}: {key_value}",
         f"generated: {datetime.now(IST).isoformat(timespec='seconds')}",
+        "currency: INR",
         f"runs: {t['runs']}", f"forward_tests: {t['forward_tests']}", f"backtests: {t['backtests']}",
         f"trades: {t['trades']}", f"wins: {t['wins']}", f"losses: {t['losses']}",
         f"win_rate: {'' if t['win_rate'] is None else round(t['win_rate'], 1)}",
         f"net_pnl: {t['net_pnl']:.0f}", f"net_inr: {t['net_pnl']:.0f}",
-        f"net_usd: {t['net_pnl'] / INR_PER_USD:.2f}",
         f"total_costs: {t['total_costs']:.0f}",
         "tags:",
     ]

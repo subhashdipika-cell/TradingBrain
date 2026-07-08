@@ -107,7 +107,10 @@ def _month_end_export() -> None:
     try:
         from app.api.reports import _records
         from app.domains.analytics import obsidian_export as ox
-        recs = _records(month=month)
+        # Forward tests WITH trades — honest live-equivalent (excludes
+        # zero-trade STAND_ASIDE/after-hours-junk runs; see reports.export_monthly).
+        recs = [r for r in _records(month=month)
+                if r.get("run_type") == "forward-test" and r.get("trades")]
         if recs:
             path = ox.write_export(month, ox.monthly_markdown(recs, month))
             logger.info("AutoTrader: month-end Obsidian export -> %s (%d runs)",
