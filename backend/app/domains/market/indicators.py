@@ -55,6 +55,62 @@ def atr(candles: list, period: int = 14) -> float | None:
     return sum(trs[-period:]) / period
 
 
+def _stddev(values: list[float]) -> float:
+    n = len(values)
+    if n == 0:
+        return 0.0
+    mean = sum(values) / n
+    return (sum((v - mean) ** 2 for v in values) / n) ** 0.5
+
+
+def bollinger(
+    closes: list[float], period: int = 20, mult: float = 2.0
+) -> tuple[float, float, float, float] | None:
+    """Return ``(mid, upper, lower, bandwidth)`` for the last ``period`` closes.
+
+    ``bandwidth`` is ``(upper - lower) / mid`` - a scale-free measure of how
+    tight the bands are. A low bandwidth => a volatility *squeeze* (coiled).
+    """
+    if len(closes) < period:
+        return None
+    window = closes[-period:]
+    mid = sum(window) / period
+    sd = _stddev(window)
+    upper = mid + mult * sd
+    lower = mid - mult * sd
+    bandwidth = (upper - lower) / mid if mid else 0.0
+    return mid, upper, lower, bandwidth
+
+
+def bollinger_squeeze(
+    closes: list[float],
+    period: int = 20,
+    mult: float = 2.0,
+    lookback: int = 20,
+    pctile: float = 0.30,
+) -> bool:
+    """True when current band bandwidth sits in the bottom ``pctile`` of the
+    last ``lookback`` readings - i.e. the tightest it has been recently (a
+    classic Bollinger "squeeze": low volatility coiled for expansion).
+    """
+    if len(closes) < period + lookback:
+        return False
+    bws: list[float] = []
+    for j in range(len(closes) - lookback, len(closes)):
+        window = closes[j - period + 1 : j + 1]
+        if len(window) < period:
+            continue
+        mid = sum(window) / period
+        sd = _stddev(window)
+        bws.append((2 * mult * sd) / mid if mid else 0.0)
+    if len(bws) < 2:
+        return False
+    current = bws[-1]
+    ranked = sorted(bws)
+    threshold = ranked[max(0, int(pctile * len(ranked)) - 1)]
+    return current <= threshold
+
+
 def adx(candles: list, period: int = 14) -> float | None:
     """Wilder's ADX (simple-average variant) — trend strength 0..100."""
     if len(candles) < period * 2:
@@ -90,6 +146,12 @@ class Structure:
     rsi: float
     trend: TrendDirection
     vol_regime: VolatilityRegime
+    # Bollinger band read (drives the low-vol "coiled" convexity-buy setup, TB007)
+    bb_mid: float = 0.0
+    bb_upper: float = 0.0
+    bb_lower: float = 0.0
+    bb_bandwidth: float = 0.0
+    squeeze: bool = False
 
 
 def analyse(candles: list, *, fast: int = 9, slow: int = 21,
@@ -126,5 +188,15 @@ def analyse(candles: list, *, fast: int = 9, slow: int = 21,
                VolatilityRegime.HIGH if atr_pct >= 1.2 else
                VolatilityRegime.LOW if atr_pct < 0.5 else VolatilityRegime.NORMAL)
 
+    bb = bollinger(closes, period=20, mult=2.0)
+    if bb is not None:
+        bb_mid, bb_upper, bb_lower, bb_bandwidth = bb
+    else:
+        bb_mid = bb_upper = bb_lower = last
+        bb_bandwidth = 0.0
+    squeeze = bollinger_squeeze(closes, period=20, mult=2.0, lookback=20, pctile=0.30)
+
     return Structure(ema_fast=ef, ema_slow=es, adx=a, atr=at, rsi=r,
-                     trend=trend, vol_regime=vol)
+                     trend=trend, vol_regime=vol,
+                     bb_mid=bb_mid, bb_upper=bb_upper, bb_lower=bb_lower,
+                     bb_bandwidth=bb_bandwidth, squeeze=squeeze)

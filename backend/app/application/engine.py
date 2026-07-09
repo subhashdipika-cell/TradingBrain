@@ -107,6 +107,15 @@ class _OpenTrade:
     margin: float = 0.0
     profit_target: float = 0.0  # rupees; bank and leave
     max_loss_rupees: float = 0.0  # rupees; hard stop
+    # Multi-session (overnight) holding — long-vol structures only. When
+    # ``hold_overnight`` is set the engine does NOT force-close at end of day;
+    # it rolls the position up to ``max_hold_sessions`` overnights, then exits.
+    # A held position is always closed on/before the option's ``expiry`` so it
+    # never becomes a 0-DTE overnight gamble.
+    hold_overnight: bool = False
+    max_hold_sessions: int = 0
+    sessions_held: int = 0
+    expiry: date | None = None
 
 
 class TradingEngine:
@@ -200,12 +209,39 @@ class TradingEngine:
         )
 
     def _end_of_day(self, snapshot: MarketSnapshot) -> None:
-        if self._open_trade is not None:
-            self._close_position(snapshot, ExitReason.TIME_EXIT)
+        trade = self._open_trade
+        if trade is not None:
+            if self._holds_overnight(trade, snapshot):
+                trade.sessions_held += 1
+                self.journal.record_event(
+                    snapshot.timestamp,
+                    f"HOLD {trade.structure} {trade.symbol} overnight "
+                    f"(session {trade.sessions_held}/{trade.max_hold_sessions})",
+                )
+            else:
+                self._close_position(snapshot, ExitReason.TIME_EXIT)
         context = self._build_context(snapshot)
         for strat in self._strategies():
+            # Don't reset the strategy still holding a rolled-over position; its
+            # lifecycle state stays owned by the open trade until it closes.
+            if (
+                self._open_trade is not None
+                and strat is self._position_strategy
+                and self._open_trade.hold_overnight
+            ):
+                continue
             strat.post_market(context)
         self.journal.record_equity(snapshot.timestamp, self.portfolio.equity())
+
+    def _holds_overnight(self, trade: _OpenTrade, snapshot: MarketSnapshot) -> bool:
+        """True when a long-vol position should roll into the next session
+        rather than square off tonight: opt-in, under the session cap, and
+        strictly before the option's expiry (never hold a 0-DTE overnight)."""
+        if not trade.hold_overnight:
+            return False
+        if trade.expiry is not None and snapshot.timestamp.date() >= trade.expiry:
+            return False
+        return trade.sessions_held < trade.max_hold_sessions
 
     # ------------------------------------------------------------------
     # Per-bar processing
@@ -256,6 +292,10 @@ class TradingEngine:
         if isinstance(meta.get("calendar_legs"), list) and meta["calendar_legs"]:
             # Two-expiry calendar structure (TB008).
             self._open_calendar(signal, snapshot, strategy)
+            return
+        if isinstance(meta.get("straddle_legs"), list) and meta["straddle_legs"]:
+            # Long-volatility DEBIT structure (TB007 neutral straddle).
+            self._open_straddle(signal, snapshot, strategy)
             return
         leg_specs = meta.get("legs")
         if not isinstance(leg_specs, list) or not leg_specs:
@@ -462,6 +502,131 @@ class TradingEngine:
             f"target {signal.take_profit})",
         )
 
+    def _open_straddle(
+        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+    ) -> None:
+        """
+        Express a long-volatility view as a delta-neutral **long straddle** - a
+        defined-risk DEBIT: buy the ATM call AND the ATM put. The premium paid
+        is the capped max loss; the structure is long gamma + long vega and
+        profits from a large move in EITHER direction (no directional guess).
+
+        Sized so the debit paid stays within ``requested_risk`` of capital.
+        Exits are MTM-based (bank at +target%, cut at -stop% of the debit) plus
+        the 15:15 square-off - the strategy carries no directional bias.
+        """
+        meta = signal.metadata
+        spec = snapshot.spec
+        chain = snapshot.option_chain
+        strike = meta.get("body_strike")
+        strike = (
+            float(strike)
+            if strike
+            else (chain.nearest_strike(snapshot.spot) if chain else None)
+        )
+        if strike is None:
+            strategy.reset()
+            return
+
+        call_px = snapshot.option_price(OptionRight.CALL, strike)
+        put_px = snapshot.option_price(OptionRight.PUT, strike)
+        debit = call_px + put_px
+        if debit <= 0:
+            strategy.reset()
+            return
+
+        risk_fraction = signal.requested_risk or 0.01
+        budget = self.portfolio.capital.starting_capital * risk_fraction
+        debit_per_lot = debit * spec.lot_size
+        lots = int(budget // debit_per_lot)
+        if lots <= 0:
+            strategy.reset()
+            return
+        units = lots * spec.lot_size
+
+        gate = self.risk.approve_entry(
+            self.portfolio, new_capital=debit_per_lot * lots
+        )
+        if not gate.approved:
+            self.journal.record_event(
+                snapshot.timestamp, f"Entry blocked: {gate.reason}"
+            )
+            strategy.reset()
+            return
+
+        realized_start = self.portfolio.realized_pnl()
+        legs = [
+            _Leg(
+                instrument=self._instrument(spec.symbol, strike, OptionRight.CALL),
+                right=OptionRight.CALL,
+                strike=strike,
+                side="BUY",
+            ),
+            _Leg(
+                instrument=self._instrument(spec.symbol, strike, OptionRight.PUT),
+                right=OptionRight.PUT,
+                strike=strike,
+                side="BUY",
+            ),
+        ]
+        entry_commission = 0.0
+        for leg in legs:
+            fill = self.broker.submit(
+                Order(
+                    symbol=spec.symbol,
+                    instrument=leg.instrument,
+                    quantity=units,  # long both legs
+                    right=leg.right,
+                    strike=leg.strike,
+                    tag=f"{strategy.name}_ENTRY_STRADDLE",
+                ),
+                snapshot,
+            )
+            if fill is None:
+                continue
+            self._book_fill(fill, leg.right, leg.strike)
+            entry_commission += fill.commission
+
+        target_pct = float(meta.get("target_profit_pct", 0.60))
+        stop_pct = float(meta.get("stop_loss_pct", 0.50))
+        entry_debit_rupees = debit * units
+        hold_overnight = bool(meta.get("hold_overnight", False))
+        max_hold_sessions = int(meta.get("max_hold_sessions", 0))
+
+        self._open_trade = _OpenTrade(
+            structure=OptionStructure.LONG_STRADDLE.value,
+            symbol=spec.symbol,
+            body_strike=strike,
+            lots=lots,
+            units=units,
+            entry_time=snapshot.timestamp,
+            entry_credit=-debit,  # debit paid
+            target_credit=0.0,
+            stop_credit=0.0,
+            square_off=time(15, 15),
+            realized_start=realized_start,
+            entry_commission=entry_commission,
+            legs=legs,
+            kind="LONG_VOL",
+            strategy_name=strategy.name,
+            profit_target=entry_debit_rupees * target_pct,
+            max_loss_rupees=entry_debit_rupees * stop_pct,
+            hold_overnight=hold_overnight,
+            max_hold_sessions=max_hold_sessions,
+            expiry=snapshot.expiry,
+        )
+        self._position_strategy = strategy
+        self.risk.record_trade()
+        hold_note = (
+            f" hold<= {max_hold_sessions} sess" if hold_overnight else " intraday"
+        )
+        self.journal.record_event(
+            snapshot.timestamp,
+            f"ENTER LONG_STRADDLE {spec.symbol} {strike:.0f} x{lots} "
+            f"debit {debit:.2f} (bank +Rs {self._open_trade.profit_target:,.0f}, "
+            f"cut -Rs {self._open_trade.max_loss_rupees:,.0f},{hold_note})",
+        )
+
     def _open_calendar(
         self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
     ) -> None:
@@ -575,7 +740,10 @@ class TradingEngine:
         assert trade is not None
 
         reason: ExitReason | None = None
-        if trade.kind == "CALENDAR":
+        if trade.kind in ("CALENDAR", "LONG_VOL"):
+            # MTM-based exits: bank at +target, cut at -stop (both in rupees).
+            # A long straddle (LONG_VOL) can never lose more than its debit, so
+            # the stop just trims the theta bleed before that floor.
             unrealized = self.portfolio.unrealized_pnl()
             if unrealized >= trade.profit_target > 0:
                 reason = ExitReason.TARGET
@@ -593,7 +761,15 @@ class TradingEngine:
                 reason = ExitReason.STOP_LOSS
 
         if reason is None and snapshot.timestamp.time() >= trade.square_off:
-            reason = ExitReason.TIME_EXIT
+            # A position flagged to hold overnight skips the intraday square-off
+            # EXCEPT on/after its expiry day, where it must flatten (no 0-DTE
+            # overnight). Non-holding trades always square off.
+            expiring = (
+                trade.expiry is not None
+                and snapshot.timestamp.date() >= trade.expiry
+            )
+            if not trade.hold_overnight or expiring:
+                reason = ExitReason.TIME_EXIT
 
         if reason is None and self._position_strategy is not None:
             override = self._position_strategy.manage_position(context)
@@ -799,7 +975,17 @@ class TradingEngine:
             context.trend = struct.trend
             context.volatility_regime = struct.vol_regime
             context.indicators.update(
-                {"rsi": struct.rsi, "adx": struct.adx, "atr": struct.atr}
+                {
+                    "rsi": struct.rsi,
+                    "adx": struct.adx,
+                    "atr": struct.atr,
+                    # Bollinger read for the low-vol convexity-buy setup (TB007).
+                    "bb_mid": struct.bb_mid,
+                    "bb_upper": struct.bb_upper,
+                    "bb_lower": struct.bb_lower,
+                    "bb_bandwidth": struct.bb_bandwidth,
+                    "squeeze": struct.squeeze,
+                }
             )
         return context
 

@@ -133,9 +133,16 @@ def register_all_strategies() -> None:
     from app.domains.strategy.credit_sellers import CREDIT_STRATEGIES
     from app.domains.strategy.tb001 import TB001Strategy
     from app.domains.strategy.tb002 import TB002Strategy
+    from app.domains.strategy.tb007 import TB007Strategy
     from app.domains.strategy.tb008 import TB008Strategy
 
-    for cls in (TB001Strategy, TB002Strategy, TB008Strategy, *CREDIT_STRATEGIES):
+    for cls in (
+        TB001Strategy,
+        TB002Strategy,
+        TB007Strategy,
+        TB008Strategy,
+        *CREDIT_STRATEGIES,
+    ):
         if not StrategyRegistry.exists(cls.name):
             StrategyRegistry.register(cls)
 
@@ -146,12 +153,18 @@ def _structure_router(context: MarketContext) -> str | None:
     Structure is read from indicators the engine populates on the context
     (regime, trend direction, volatility). Mapping (confirmed with the user):
 
+      Range + low IV + COIL-> TB007 Convexity Buy (buy the coming expansion)
       Range + low IV       -> TB001 Iron Fly (max theta, ATM)
       Range + normal/high  -> TB004 Iron Condor (defined risk, wider)
       Uptrend              -> TB005 Bull Put Spread
       Downtrend            -> TB006 Bear Call Spread
       Strong breakout/rev. -> TB002 (ICT directional debit)
       Extreme vol / no edge-> stand aside (None)
+
+    The COIL branch is the Taleb refinement: when IV is cheap AND price is
+    compressed (a live Bollinger squeeze), do NOT sell premium into a coiled
+    spring - BUY the convexity and ride the expansion (TB007). TB007's own
+    gates confirm the breakout; if they don't fire the engine simply sits out.
     """
     from app.domains.shared.enums import TrendDirection, VolatilityRegime
 
@@ -163,7 +176,12 @@ def _structure_router(context: MarketContext) -> str | None:
         return None  # stand aside — tails too fat to sell
 
     if regime in (MarketRegime.RANGING, MarketRegime.UNKNOWN):
-        return "TB001" if vol == VolatilityRegime.LOW else "TB004"
+        if vol == VolatilityRegime.LOW:
+            # Cheap vol + coiled -> buy the expansion instead of selling theta.
+            if context.indicators.get("squeeze"):
+                return "TB007"
+            return "TB001"
+        return "TB004"
 
     if regime == MarketRegime.TRENDING:
         if trend == TrendDirection.BULLISH:
@@ -202,6 +220,8 @@ def default_selector() -> StrategySelector:
     selector.map_regime(MarketRegime.BREAKOUT, "TB002")
     selector.map_regime(MarketRegime.REVERSAL, "TB002")
     # Ensure every routable strategy is initialised, then wire the fine router.
-    selector.add_to_roster("TB001", "TB002", "TB003", "TB004", "TB005", "TB006")
+    selector.add_to_roster(
+        "TB001", "TB002", "TB003", "TB004", "TB005", "TB006", "TB007"
+    )
     selector.set_resolver(_structure_router)
     return selector
