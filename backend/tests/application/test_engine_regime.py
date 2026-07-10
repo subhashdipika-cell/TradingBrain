@@ -12,6 +12,7 @@ from app.domains.strategy.contracts.context import MarketContext
 from app.domains.strategy.contracts.signal import Signal
 from app.domains.strategy.contracts.strategy import BaseStrategy
 from app.domains.strategy.selector import default_selector
+from app.domains.strategy.tb001 import TB001Strategy
 
 
 def _engine(strategy=None, selector=None, feed=None):
@@ -103,6 +104,40 @@ class _Gated(_Bullish):
         if not context.metadata.get("ict_ready"):
             return None
         return super().generate_signal(context)
+
+
+def test_gap_day_dampens_hedged_entry_sizing():
+    # Same deterministic feed both times (seed=42 default) so any lots
+    # difference is caused only by the injected gap, not different market
+    # data. today_gap_pct=1.0 (>= the 0.75% threshold) should halve the
+    # allocation for TB001's hedged Iron Fly entries.
+    def gap_enricher(context: MarketContext) -> None:
+        context.today_gap_pct = 1.0
+
+    plain = TradingEngine(
+        strategy=TB001Strategy(),
+        feed=BacktestFeed(num_days=3, bar_minutes=15, base_iv=0.13),
+        broker=PaperBroker(),
+        portfolio=Portfolio(1_000_000),
+        risk_engine=RiskEngine(),
+        config=EngineConfig(bar_minutes=15),
+    ).run()
+
+    gapped = TradingEngine(
+        strategy=TB001Strategy(),
+        feed=BacktestFeed(num_days=3, bar_minutes=15, base_iv=0.13),
+        broker=PaperBroker(),
+        portfolio=Portfolio(1_000_000),
+        risk_engine=RiskEngine(),
+        config=EngineConfig(bar_minutes=15),
+        context_enricher=gap_enricher,
+    ).run()
+
+    assert plain.trade_count >= 1
+    assert gapped.trade_count >= 1
+    plain_lots = plain.trades[0].lots
+    gapped_lots = gapped.trades[0].lots
+    assert gapped_lots < plain_lots
 
 
 def test_context_enricher_feeds_strategy():

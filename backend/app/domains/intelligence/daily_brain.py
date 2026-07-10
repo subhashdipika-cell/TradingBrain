@@ -148,10 +148,24 @@ def _lookback_features() -> dict:
     except Exception:
         pass
 
+    # TODAY's own open-vs-prior-close gap (distinct from max_gap_pct, which
+    # only looks at gaps *between* the completed lookback days). The plan()
+    # call happens well after the live AutoTrader would otherwise start
+    # polling (10:20 IST) - the feed can't see the true 09:15 print by then,
+    # but this same Dhan call already returns today's bars-so-far (to_date=
+    # today), so the real opening print is available here for free.
+    today_gap_pct = None
+    today_bars = nifty.get(today)
+    if today_bars:
+        today_open = today_bars[0]["o"]
+        prior_close = per_day[-1]["close"]
+        if prior_close:
+            today_gap_pct = round((today_open - prior_close) / prior_close * 100, 3)
+
     return {"days": per_day, "net_drift_pct": round(net_drift, 3),
             "efficiency": round(efficiency, 3), "consistency": round(consistency, 2),
             "avg_day_range_pct": round(avg_range, 3), "max_gap_pct": round(max_gap, 3),
-            "vix": vix}
+            "today_gap_pct": today_gap_pct, "vix": vix}
 
 
 def _classify(f: dict) -> tuple[str, str]:

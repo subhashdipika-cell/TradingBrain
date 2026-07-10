@@ -93,6 +93,7 @@ def run_forward_test(
     # days of behaviour and picks today's strategy from its learned memory
     # (see intelligence/daily_brain.py). It may refuse to trade (STAND_ASIDE).
     brain_mode = (strategy or "").upper() == "BRAIN"
+    today_gap_pct = None
     if brain_mode:
         from app.domains.intelligence import daily_brain
         p = daily_brain.plan()
@@ -100,8 +101,11 @@ def run_forward_test(
             raise RuntimeError(
                 f"Brain says STAND ASIDE today ({p['regime']}): {p['reason']}")
         strategy = p["strategy"]
+        today_gap_pct = p["lookback"].get("today_gap_pct")
         log.info("Brain plan %s: regime=%s -> strategy=%s (%s)",
                  p["date"], p["regime"], strategy, p["reason"])
+        if today_gap_pct is not None:
+            log.info("Today's open gap: %+.2f%%", today_gap_pct)
 
     auto = (strategy or "AUTO").upper() == "AUTO"
     strat_obj = None
@@ -121,6 +125,7 @@ def run_forward_test(
         use_selector=auto,
         strategy=strat_obj,
         max_polls=max_polls,
+        today_gap_pct=today_gap_pct,
         log=log,
     )
 

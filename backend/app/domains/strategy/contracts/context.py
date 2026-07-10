@@ -68,6 +68,12 @@ class MarketContext:
     pcr: float | None = None                 # total put OI / total call OI
     max_pain_strike: float | None = None
 
+    # Today's open-vs-prior-close gap, % (None when unavailable - backtests,
+    # or a live run started before the Daily Brain could compute it). Set
+    # once per session by a context_enricher, not derived from the rolling
+    # candle window (see daily_brain._lookback_features).
+    today_gap_pct: float | None = None
+
     # Session
     is_market_open: bool = False
     is_expiry: bool = False

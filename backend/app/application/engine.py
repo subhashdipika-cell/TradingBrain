@@ -56,6 +56,13 @@ ENTRY_CUTOFF = time(15, 5)
 # and Stocko live audits) condemning the volatile open. Let it settle first.
 ENTRY_OPEN_CUTOFF = time(10, 15)
 
+# Gap-day sizing dampener (credit-seller/TB001 entries only - see
+# _open_position): halve the risk allocation when today opened >=0.75% away
+# from yesterday's close. Reacts to TODAY specifically; daily_brain's own
+# max_gap_pct only judges the last 3 completed days.
+GAP_DAMPEN_THRESHOLD_PCT = 0.75
+GAP_DAMPEN_FACTOR = 0.5
+
 
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
@@ -278,7 +285,7 @@ class TradingEngine:
                 return  # regime has no strategy mapped -> sit out
             signal = active.generate_signal(context)
             if signal is not None and signal.is_entry:
-                self._open_position(signal, snapshot, active)
+                self._open_position(signal, snapshot, active, context)
         else:
             self._manage_open_trade(snapshot, context)
 
@@ -286,7 +293,11 @@ class TradingEngine:
     # Position lifecycle
     # ------------------------------------------------------------------
     def _open_position(
-        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+        self,
+        signal: Signal,
+        snapshot: MarketSnapshot,
+        strategy: BaseStrategy,
+        context: MarketContext,
     ) -> None:
         meta = signal.metadata
         if isinstance(meta.get("calendar_legs"), list) and meta["calendar_legs"]:
@@ -336,6 +347,18 @@ class TradingEngine:
                 spot=snapshot.spot, lot_size=spec.lot_size
             )
             allocation = self.config.capital_allocation
+
+        # Gap-day dampener: TB001's worst losses came from the volatile
+        # 09:15-10:15 open window (see ENTRY_OPEN_CUTOFF above); an abnormal
+        # overnight gap is exactly when that risk is highest, so size down
+        # uniformly (not a strategy-choice bias) rather than skip the day
+        # outright. today_gap_pct is None whenever it isn't known (backtests,
+        # or a run started without the Daily Brain), so this is a no-op then.
+        if (
+            context.today_gap_pct is not None
+            and abs(context.today_gap_pct) >= GAP_DAMPEN_THRESHOLD_PCT
+        ):
+            allocation *= GAP_DAMPEN_FACTOR
 
         sizing = self.sizer.size_for_margin(
             capital=self.portfolio.capital.starting_capital,

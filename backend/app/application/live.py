@@ -145,6 +145,7 @@ class LivePaperTrader:
         strategy: BaseStrategy | None = None,
         max_polls: int | None = None,
         enable_ict: bool = True,
+        today_gap_pct: float | None = None,
         log: logging.Logger | None = None,
     ) -> "LivePaperTrader":
         """
@@ -153,6 +154,8 @@ class LivePaperTrader:
         a live Dhan-candle ICT detector so TB002 can fire on real structure.
         When the single strategy is TB008, the feed also pulls the next-expiry
         chain (calendar) with a wider strike window. Requires ``dhanhq`` + token.
+        ``today_gap_pct`` (from the Daily Brain's plan) is stamped onto every
+        bar's context so entry sizing can react to an abnormal open.
         """
         from app.domains.execution.adapters.dhan_adapter import DhanFeed
         from app.domains.market.symbol import get_instrument
@@ -172,11 +175,11 @@ class LivePaperTrader:
             atm_range=40 if is_calendar else 5,
         )
 
-        enricher = None
+        ict_enrich = None
         if enable_ict:
             from app.application.ict_live import DhanLiveICT
 
-            enricher = DhanLiveICT(
+            ict_enrich = DhanLiveICT(
                 security_id=security_id,
                 exchange_segment=segment,
                 instrument_type="INDEX",
@@ -184,6 +187,12 @@ class LivePaperTrader:
                 access_token=access_token,
                 log=log,
             ).enrich
+
+        def enricher(context):
+            if ict_enrich is not None:
+                ict_enrich(context)
+            if today_gap_pct is not None:
+                context.today_gap_pct = today_gap_pct
 
         return cls.build(
             feed=feed,
