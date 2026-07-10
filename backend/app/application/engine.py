@@ -347,8 +347,14 @@ class TradingEngine:
             strategy.reset()
             return
 
+        # For hedged structures, margin_per_lot IS the max loss/lot (see
+        # sizing comment above), so capital_used already equals the position's
+        # worst-case rupee loss. Naked structures size by SPAN margin, not
+        # risk, so there's no loss bound to check here.
         entry_gate = self.risk.approve_entry(
-            self.portfolio, new_capital=sizing.capital_used
+            self.portfolio,
+            new_capital=sizing.capital_used,
+            max_loss=sizing.capital_used if wing_width is not None else 0.0,
         )
         if not entry_gate.approved:
             self.journal.record_event(

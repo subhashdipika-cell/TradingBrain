@@ -37,8 +37,19 @@ from app.domains.strategy.contracts.strategy import BaseStrategy
 
 @dataclass(frozen=True, slots=True)
 class CreditSellConfig:
-    """Sizing / risk / strike knobs shared by the credit strategies."""
-    capital_allocation: float = 0.25       # fraction of capital risked / deployed
+    """Sizing / risk / strike knobs shared by the credit strategies.
+
+    ``capital_allocation`` is the max-loss budget for hedged (defined-risk)
+    structures — the engine sizes lots so total possible loss <= this fraction
+    of capital (see engine._open_position). It must track the platform's
+    per-position risk ceiling (RiskLimits.max_position_risk, 2%): a 2026-07-09
+    TB006 Bear Call Spread realized only ~22% of its max loss yet still lost
+    5.77% of the account in one trade, because this was set to 0.25 - a
+    defined-risk spread could structurally lose up to a quarter of capital.
+    The hedge leg itself was correctly sized; this was a risk-budget bug, not
+    a missing hedge.
+    """
+    capital_allocation: float = 0.02       # fraction of capital risked / deployed
     max_daily_loss: float = 0.03
     max_strategy_drawdown: float = 0.10
     target_profit_pct: float = 0.50        # exit at 50% of the credit captured

@@ -88,9 +88,18 @@ class RiskEngine:
     # Entry gate (called before opening a position)
     # ------------------------------------------------------------------
     def approve_entry(
-        self, portfolio: Portfolio, *, new_capital: float = 0.0
+        self, portfolio: Portfolio, *, new_capital: float = 0.0, max_loss: float = 0.0
     ) -> RiskDecision:
-        """Decide whether a new entry may proceed."""
+        """Decide whether a new entry may proceed.
+
+        ``max_loss`` is the position's worst-case rupee loss for defined-risk
+        (hedged) structures - pass 0.0 for naked/margin-sized structures where
+        margin isn't a loss bound. Callers must supply this so a hedged spread
+        can never be sized past ``max_position_risk`` of capital (previously
+        dead: nothing enforced it, which let a credit-spread's own
+        ``capital_allocation`` size a single trade to risk 25% of capital -
+        see the 2026-07-09 TB006 incident).
+        """
         if not self.kill_switch.allow_new_entries():
             return RiskDecision.block(f"kill switch active: {self.kill_switch.reason}")
 
@@ -103,6 +112,9 @@ class RiskEngine:
         cap = portfolio.capital.starting_capital
         if new_capital > cap * self.limits.max_capital_per_trade:
             return RiskDecision.block("trade exceeds per-trade capital limit")
+
+        if max_loss > cap * self.limits.max_position_risk:
+            return RiskDecision.block("trade's max loss exceeds per-position risk limit")
 
         return RiskDecision.allow("entry approved")
 
