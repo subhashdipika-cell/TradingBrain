@@ -61,6 +61,13 @@ class MarketContext:
     vega: float = 0.0
     rho: float = 0.0
 
+    # Open Interest (from the live/synthetic option chain; None when the
+    # chain carries no usable OI - see OptionChain.has_oi_data)
+    max_call_oi_strike: float | None = None  # resistance: heaviest call OI
+    max_put_oi_strike: float | None = None   # support: heaviest put OI
+    pcr: float | None = None                 # total put OI / total call OI
+    max_pain_strike: float | None = None
+
     # Session
     is_market_open: bool = False
     is_expiry: bool = False

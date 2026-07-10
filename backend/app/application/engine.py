@@ -968,6 +968,16 @@ class TradingEngine:
         if snapshot.far_chain is not None:
             context.metadata["option_chain_far"] = snapshot.far_chain
 
+        # ── Open interest walls (recomputed from the chain every poll) ──
+        chain = snapshot.option_chain
+        if chain.has_oi_data():
+            call_wall = chain.max_oi_strike(OptionRight.CALL)
+            put_wall = chain.max_oi_strike(OptionRight.PUT)
+            context.max_call_oi_strike = call_wall[0] if call_wall else None
+            context.max_put_oi_strike = put_wall[0] if put_wall else None
+            context.pcr = chain.put_call_oi_ratio()
+            context.max_pain_strike = chain.max_pain_strike()
+
         # ── Market structure from indicators (drives regime + strategy routing) ──
         self._recent_candles.append(snapshot.candle)
         if len(self._recent_candles) > 250:

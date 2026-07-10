@@ -66,6 +66,37 @@ def _price(chain: OptionChain, strike: float, right: OptionRight) -> float | Non
     return q.price if q is not None else None
 
 
+def _oi_short_index(
+    chain: OptionChain,
+    complete: list[float],
+    idx: int,
+    *,
+    direction: int,
+    right: OptionRight,
+    min_steps: int,
+) -> int:
+    """
+    Index (into ``complete``) of the short leg for one side of a credit
+    structure. Defaults to the fixed ``min_steps`` OTM offset (the original
+    ATM-relative logic). When the chain carries usable OI, the short is
+    pushed out to sit at/beyond the OI wall instead - max-Call-OI is
+    resistance above spot, max-Put-OI is support below spot, and a seller is
+    safer defended by a level the market has to break than by a fixed strike
+    count. Never moves the short CLOSER to spot than ``min_steps``: that
+    floor is a risk control, not a target, so a wall between spot and the
+    floor is ignored rather than tightening the trade.
+    """
+    fallback = idx + direction * min_steps
+    wall = chain.max_oi_strike(right)
+    if wall is None:
+        return fallback
+    wall_strike, _wall_oi = wall
+    if wall_strike not in complete:
+        return fallback
+    wall_idx = complete.index(wall_strike)
+    return max(wall_idx, fallback) if direction > 0 else min(wall_idx, fallback)
+
+
 class CreditSellStrategy(BaseStrategy):
     """Base for premium-selling strategies. Subclasses build the legs."""
 
@@ -175,7 +206,8 @@ class ShortStrangleStrategy(CreditSellStrategy):
 
     def _legs(self, chain, complete, idx):
         n = self.configuration.short_otm
-        ci, pi = idx + n, idx - n
+        ci = _oi_short_index(chain, complete, idx, direction=1, right=OptionRight.CALL, min_steps=n)
+        pi = _oi_short_index(chain, complete, idx, direction=-1, right=OptionRight.PUT, min_steps=n)
         if ci >= len(complete) or pi < 0:
             return None
         sc, sp = complete[ci], complete[pi]
@@ -198,8 +230,10 @@ class IronCondorStrategy(CreditSellStrategy):
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm
-        ci, pi, lci, lpi = idx + n, idx - n, idx + n + w, idx - n - w
-        if lci >= len(complete) or lpi < 0:
+        ci = _oi_short_index(chain, complete, idx, direction=1, right=OptionRight.CALL, min_steps=n)
+        pi = _oi_short_index(chain, complete, idx, direction=-1, right=OptionRight.PUT, min_steps=n)
+        lci, lpi = ci + w, pi - w
+        if ci >= len(complete) or pi < 0 or lci >= len(complete) or lpi < 0:
             return None
         sc, sp, lc, lp = complete[ci], complete[pi], complete[lci], complete[lpi]
         scp = _price(chain, sc, OptionRight.CALL)
@@ -228,8 +262,9 @@ class BullPutSpreadStrategy(CreditSellStrategy):
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm
-        si, li = idx - n, idx - n - w
-        if li < 0:
+        si = _oi_short_index(chain, complete, idx, direction=-1, right=OptionRight.PUT, min_steps=n)
+        li = si - w
+        if si < 0 or li < 0:
             return None
         ss, ls = complete[si], complete[li]
         ssp, lsp = _price(chain, ss, OptionRight.PUT), _price(chain, ls, OptionRight.PUT)
@@ -251,8 +286,9 @@ class BearCallSpreadStrategy(CreditSellStrategy):
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm
-        si, li = idx + n, idx + n + w
-        if li >= len(complete):
+        si = _oi_short_index(chain, complete, idx, direction=1, right=OptionRight.CALL, min_steps=n)
+        li = si + w
+        if si >= len(complete) or li >= len(complete):
             return None
         ss, ls = complete[si], complete[li]
         ssp, lsp = _price(chain, ss, OptionRight.CALL), _price(chain, ls, OptionRight.CALL)

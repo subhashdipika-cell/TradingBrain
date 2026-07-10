@@ -30,6 +30,8 @@ class OptionQuote:
     right: OptionRight
     greeks: OptionGreeks
     underlying: float
+    open_interest: float = 0.0
+    volume: float = 0.0
 
     @property
     def price(self) -> float:
@@ -85,6 +87,66 @@ class OptionChain:
         if call is None or put is None:
             return None
         return call, put
+
+    # ── Open interest (OI) ──────────────────────────────────────────────────
+    # Sellers care where OI concentrates: the exchange's biggest open call/put
+    # positions mark levels the market has historically had to work to break
+    # (walls), and where they cluster brackets the strike option writers as a
+    # whole lose the least at expiry (max pain) - both are levels a short
+    # strike is safer parked at/beyond, not just N strikes OTM of spot.
+
+    def has_oi_data(self) -> bool:
+        """False for chains with no OI (e.g. the synthetic backtest chain) -
+        callers should fall back to plain ATM-offset strike selection."""
+        return any(q.open_interest > 0 for q in self.quotes.values())
+
+    def max_oi_strike(self, right: OptionRight) -> tuple[float, float] | None:
+        """(strike, OI) with the highest open interest for one side, or
+        ``None`` when this chain carries no usable OI for that side."""
+        best: tuple[float, float] | None = None
+        for strike in self.strikes():
+            quote = self.get(strike, right)
+            if quote is None:
+                continue
+            if best is None or quote.open_interest > best[1]:
+                best = (strike, quote.open_interest)
+        if best is None or best[1] <= 0:
+            return None
+        return best
+
+    def put_call_oi_ratio(self) -> float | None:
+        """Total put OI / total call OI, or ``None`` when call OI is 0."""
+        call_oi = sum(
+            q.open_interest for (_s, r), q in self.quotes.items() if r == OptionRight.CALL
+        )
+        put_oi = sum(
+            q.open_interest for (_s, r), q in self.quotes.items() if r == OptionRight.PUT
+        )
+        if call_oi <= 0:
+            return None
+        return put_oi / call_oi
+
+    def max_pain_strike(self) -> float | None:
+        """The strike at which option writers' aggregate expiry payout across
+        the whole chain is smallest - classic "max pain". ``None`` when the
+        chain has no strikes or no OI to weight the calculation with."""
+        strikes = self.strikes()
+        if not strikes or not self.has_oi_data():
+            return None
+        best_strike: float | None = None
+        best_loss: float | None = None
+        for candidate in strikes:
+            loss = 0.0
+            for strike in strikes:
+                call = self.get(strike, OptionRight.CALL)
+                if call is not None and candidate > strike:
+                    loss += (candidate - strike) * call.open_interest
+                put = self.get(strike, OptionRight.PUT)
+                if put is not None and candidate < strike:
+                    loss += (strike - candidate) * put.open_interest
+            if best_loss is None or loss < best_loss:
+                best_loss, best_strike = loss, candidate
+        return best_strike
 
 
 def build_synthetic_chain(

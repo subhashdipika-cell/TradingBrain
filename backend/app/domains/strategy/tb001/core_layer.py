@@ -77,6 +77,7 @@ class CoreLayer:
         strike = chain.nearest_strike(context.last_price or chain.underlying)
         if strike is None:
             return None
+        strike = self._oi_pinned_body(chain, strike)
 
         straddle = chain.straddle(strike)
         if straddle is None:
@@ -120,6 +121,43 @@ class CoreLayer:
                 "square_off_time": self.config.square_off_time,
             },
         )
+
+    def _oi_pinned_body(self, chain: OptionChain, atm_strike: float) -> float:
+        """
+        Nudge the straddle body toward the OI-pinned strike among ATM's
+        immediate neighbors.
+
+        IRON_FLY sells the call and put at the SAME strike, so unlike the
+        two-sided credit spreads (TB003-TB006) it can't independently chase
+        a call wall and a put wall without becoming a strangle. The OI-aware
+        adjustment here is instead bounded to at most one strike either side
+        of raw ATM: pick whichever of {ATM-1, ATM, ATM+1} carries the highest
+        combined (call+put) OI, on the idea that a straddle sold at the
+        strike the chain says the market is most likely to pin to is safer
+        than one sold at the strike merely closest to the current spot.
+        Falls back to ``atm_strike`` unchanged when the chain has no usable
+        OI (e.g. the synthetic backtest chain).
+        """
+        if not chain.has_oi_data():
+            return atm_strike
+        step = [
+            s for s in chain.strikes()
+            if chain.get(s, OptionRight.CALL) and chain.get(s, OptionRight.PUT)
+        ]
+        if atm_strike not in step:
+            return atm_strike
+        idx = step.index(atm_strike)
+        candidates = [i for i in (idx - 1, idx, idx + 1) if 0 <= i < len(step)]
+
+        def combined_oi(i: int) -> float:
+            s = step[i]
+            call = chain.get(s, OptionRight.CALL)
+            put = chain.get(s, OptionRight.PUT)
+            return (call.open_interest if call else 0.0) + (put.open_interest if put else 0.0)
+
+        if not any(combined_oi(i) > 0 for i in candidates):
+            return atm_strike
+        return step[max(candidates, key=combined_oi)]
 
     def _build_structure(
         self, chain: OptionChain, body: float

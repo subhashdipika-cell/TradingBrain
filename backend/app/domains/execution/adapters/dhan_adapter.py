@@ -201,6 +201,8 @@ class DhanFeed(DataFeed):
                         right=right,
                         greeks=self._greeks(leg, right, float(sk), under_ltp, tte, iv),
                         underlying=under_ltp,
+                        open_interest=float(leg.get("oi", 0) or 0),
+                        volume=float(leg.get("volume", 0) or 0),
                     )
                 )
         atm_iv = (sum(atm_ivs) / len(atm_ivs)) if atm_ivs else 0.0
