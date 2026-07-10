@@ -131,16 +131,21 @@ class StrategySelector:
 def register_all_strategies() -> None:
     """Register every built-in strategy (idempotent)."""
     from app.domains.strategy.credit_sellers import CREDIT_STRATEGIES
+    from app.domains.strategy.range_breakout import RangeBreakoutCreditStrategy
     from app.domains.strategy.tb001 import TB001Strategy
     from app.domains.strategy.tb002 import TB002Strategy
     from app.domains.strategy.tb007 import TB007Strategy
     from app.domains.strategy.tb008 import TB008Strategy
 
+    # TB009 is registered (manual forward tests via strategy=TB009) but is
+    # deliberately NOT in the Daily Brain's POOL yet - it must earn its way
+    # into autonomous rotation with forward-test evidence first.
     for cls in (
         TB001Strategy,
         TB002Strategy,
         TB007Strategy,
         TB008Strategy,
+        RangeBreakoutCreditStrategy,
         *CREDIT_STRATEGIES,
     ):
         if not StrategyRegistry.exists(cls.name):

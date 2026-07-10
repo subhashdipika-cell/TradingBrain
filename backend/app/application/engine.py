@@ -1005,6 +1005,11 @@ class TradingEngine:
         self._recent_candles.append(snapshot.candle)
         if len(self._recent_candles) > 250:
             self._recent_candles = self._recent_candles[-250:]
+        # Expose the rolling window so bar-history strategies (TB009's opening
+        # range) can see candles from before their entry window. Note this
+        # starts at RUN start: a live run begun mid-session won't contain the
+        # open - live runs get full-day candles via the ICT enricher instead.
+        context.metadata["session_candles"] = self._recent_candles
         struct = analyse(self._recent_candles, iv=snapshot.implied_vol)
         if struct is not None:
             context.ema_fast = struct.ema_fast

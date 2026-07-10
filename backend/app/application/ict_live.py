@@ -58,6 +58,7 @@ class DhanLiveICT:
         self._detector = detector or ICTDetector()
         self._log = log or logger
         self._provider: ICTSetupProvider | None = None
+        self._ltf: list = []
         self._last_refresh = 0.0
 
     # ------------------------------------------------------------------
@@ -73,6 +74,7 @@ class DhanLiveICT:
         self._provider = ICTSetupProvider(
             htf=htf, m15=m15, ltf=ltf, detector=self._detector, ltf_timeframe="5m"
         )
+        self._ltf = ltf
         self._last_refresh = time.monotonic()
         self._log.info(
             "ICT candles refreshed (HTF=%d, 15m=%d, LTF=%d)",
@@ -94,4 +96,9 @@ class DhanLiveICT:
                 return context
         if self._provider is not None:
             self._provider.enrich(context)
+        if self._ltf:
+            # Full-day 5m history for bar-window strategies (TB009's opening
+            # range) - a live run started mid-session can't otherwise see
+            # candles from before it began polling.
+            context.metadata["day_candles_5m"] = self._ltf
         return context
