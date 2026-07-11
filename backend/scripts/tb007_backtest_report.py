@@ -70,6 +70,21 @@ STATUS_END = "<!-- STATUS-END -->"
 STALE_TRADING_DAYS = 4  # newest session older than this => collector likely down
 WATCH_TRADING_DAYS = 2  # a holiday or one-off miss; worth a soft flag
 
+# Hypothesis re-tests that come due when the NIFTY50 sample grows past a
+# threshold. The status banner announces them so a filed hypothesis cannot be
+# silently forgotten. (threshold_sessions, note)
+PENDING_RETESTS = [
+    (
+        40,
+        "**TB005-at-open A/B is due** — hypothesis filed 2026-07-11 at 14 "
+        "sessions (open entries flipped TB005 to PF 1.39 while every other "
+        "strategy confirmed the 10:15 gate). Re-run: "
+        "`python -m scripts.open_gate_ab`. If it still holds, implement a "
+        "per-strategy `open_entry_allowed` override — do NOT lift the "
+        "platform gate.",
+    ),
+]
+
 
 @dataclass
 class Result:
@@ -471,7 +486,12 @@ def main() -> None:
     with open(tracker, encoding="utf-8") as f:
         text = f.read()
     text = remove_existing_run(text, run_date)  # idempotent same-day re-runs
-    text = set_status(text, status_banner(run_date, fresh))
+    banner = status_banner(run_date, fresh)
+    nifty_sessions = cov.get("NIFTY50", {}).get("sessions", 0)
+    for threshold, note in PENDING_RETESTS:
+        if nifty_sessions >= threshold:
+            banner += f"\n> 📌 {note}"
+    text = set_status(text, banner)
     text = insert_after(text, TREND_MARKER, build_trend_rows(run_date, cov, aggs))
     text = insert_after(
         text, DETAIL_MARKER,
@@ -491,6 +511,10 @@ def main() -> None:
     else:
         print(f"[tb007-report] data {fresh.status} ({fresh.emoji}) "
               f"+{fresh.sessions_added} session(s) since last run")
+    for threshold, note in PENDING_RETESTS:
+        if nifty_sessions >= threshold:
+            print(f"[tb007-report] *** RE-TEST DUE ({threshold}+ sessions) *** "
+                  f"{re.sub(r'[*`]', '', note)}")
     for label in CONFIGS:
         a = aggs[label]
         print(f"   {label:16} {a.trades:3} trades  win {a.win_pct:4.0f}%  "
