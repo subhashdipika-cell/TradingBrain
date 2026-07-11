@@ -29,6 +29,7 @@ from app.domains.shared.enums import (
     OrderSide,
     PositionSide,
     SignalType,
+    TrendDirection,
 )
 from app.domains.strategy.contracts.context import MarketContext
 from app.domains.strategy.contracts.signal import Signal
@@ -59,6 +60,18 @@ class CreditSellConfig:
     wing_otm: int = 2                      # extra strikes OTM for the hedge leg(s)
     entry_after_min: int = 15              # wait this long after the open
     min_minutes_left: int = 30             # don't open too close to the square-off
+    # Cost hurdle: skip entries whose credit is too small to clear round-trip
+    # transaction costs. Real-data audit (Jul 2026, 15 Dhan sessions): TB004
+    # banked Rs 2,659 gross but paid Rs 4,102 in costs (net -1,443) - the edge
+    # was real, the tickets were too small. Credit is in premium points; the
+    # banked target is ~ credit x target_pct x lot_size, so on NIFTY (lot 65)
+    # a 4-leg condor needs roughly >= 12 pts to clear ~Rs 240/trade costs 2x.
+    min_entry_credit: float = 0.0          # premium points; 0 = no hurdle
+    # Trend gate: directional spreads must not fight the prevailing intraday
+    # trend (TB005 sells puts - blocked in a BEARISH tape; TB006 sells calls -
+    # blocked in a BULLISH tape). The AUTO router already routes by trend, but
+    # isolated runs showed TB005 at PF 0.37 selling bull puts into declines.
+    trend_gate: bool = True
 
 
 def _price(chain: OptionChain, strike: float, right: OptionRight) -> float | None:
@@ -132,6 +145,8 @@ class CreditSellStrategy(BaseStrategy):
         day = context.timestamp.date()
         if self._last_entry_date == day:   # one entry per session
             return None
+        if cfg.trend_gate and not self._trend_ok(context):
+            return None
 
         spot = context.last_price or chain.underlying
         atm = chain.nearest_strike(spot)
@@ -150,6 +165,8 @@ class CreditSellStrategy(BaseStrategy):
             return None
         structure, legs, credit, wing = plan
         if credit <= 0:
+            return None
+        if credit < cfg.min_entry_credit:  # too small to clear costs
             return None
 
         self._last_entry_date = day
@@ -188,6 +205,12 @@ class CreditSellStrategy(BaseStrategy):
     def reset(self) -> None:
         self._last_entry_date = None
 
+    # ── hooks (subclasses) ────────────────────────────────────────────────────
+    def _trend_ok(self, context: MarketContext) -> bool:
+        """Directional-alignment veto. Default: any trend is fine (neutral
+        structures). Directional spreads override to refuse fighting the tape."""
+        return True
+
     # ── leg construction (subclasses) ─────────────────────────────────────────
     def _legs(self, chain: OptionChain, complete: list[float], idx: int):
         """Return (structure, legs, entry_credit, wing_width) or None."""
@@ -202,6 +225,10 @@ class ShortStrangleStrategy(CreditSellStrategy):
     structure = OptionStructure.SHORT_STRANGLE
 
     def _make_config(self) -> CreditSellConfig:
+        # NOTE: naked SPAN margin on NIFTY is ~Rs 1.9L/lot; below ~Rs 7.5L
+        # capital the engine sizes this to zero lots and it never trades
+        # (confirmed on the Jul-2026 real-data audit). The AUTO router never
+        # selects TB003 either - it exists for isolated runs at high capital.
         return CreditSellConfig(short_otm=3)
 
     def _legs(self, chain, complete, idx):
@@ -224,9 +251,15 @@ class ShortStrangleStrategy(CreditSellStrategy):
 # ── TB004 · Iron Condor (defined risk) ────────────────────────────────────────
 class IronCondorStrategy(CreditSellStrategy):
     name = "TB004"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Iron Condor - defined-risk OTM strangle (range)"
     structure = OptionStructure.IRON_CONDOR
+
+    def _make_config(self) -> CreditSellConfig:
+        # min_entry_credit=8: real-data sweep (15 sessions) cut the cost bleed
+        # from -1,443 to -1,040 by refusing sub-8-pt condors whose banked decay
+        # can't clear 8 fills of friction. 4 legs x 2 sides ~ Rs 240+/trade.
+        return CreditSellConfig(min_entry_credit=8.0)
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm
@@ -256,9 +289,21 @@ class IronCondorStrategy(CreditSellStrategy):
 # ── TB005 · Bull Put Spread (bullish credit) ──────────────────────────────────
 class BullPutSpreadStrategy(CreditSellStrategy):
     name = "TB005"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Bull Put Spread - sell OTM put + buy lower put (bullish)"
     structure = OptionStructure.BULL_PUT_SPREAD
+
+    def _make_config(self) -> CreditSellConfig:
+        # Gate + min_entry_credit=8: real-data sweep took TB005 from PF 0.37
+        # (-5,259, losing pre-cost) to PF 0.67 (-1,561, gross positive). Still
+        # the weakest book; standalone use is discouraged - AUTO only routes
+        # it on bullish structure.
+        return CreditSellConfig(min_entry_credit=8.0)
+
+    def _trend_ok(self, context: MarketContext) -> bool:
+        # Selling puts into a falling tape was the audit's worst edge
+        # (PF 0.37, -Rs 5,259): require the trend NOT be bearish.
+        return context.trend is not TrendDirection.BEARISH
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm
@@ -280,9 +325,21 @@ class BullPutSpreadStrategy(CreditSellStrategy):
 # ── TB006 · Bear Call Spread (bearish credit) ─────────────────────────────────
 class BearCallSpreadStrategy(CreditSellStrategy):
     name = "TB006"
-    version = "1.0.0"
+    version = "1.1.0"
     description = "Bear Call Spread - sell OTM call + buy higher call (bearish)"
     structure = OptionStructure.BEAR_CALL_SPREAD
+
+    def _make_config(self) -> CreditSellConfig:
+        # min_entry_credit=4. Honest note: on the 15-session real-data sample
+        # the trend gate REDUCED PF (1.19 -> 1.07); it is kept anyway as tail
+        # protection - selling calls into a rising tape is the exact shape of
+        # the 2026-07-09 kill-switch loss, and 15 sessions is not evidence to
+        # optimize away a structural safety rule.
+        return CreditSellConfig(min_entry_credit=4.0)
+
+    def _trend_ok(self, context: MarketContext) -> bool:
+        # Mirror of TB005: don't sell calls into a rising tape.
+        return context.trend is not TrendDirection.BULLISH
 
     def _legs(self, chain, complete, idx):
         n, w = self.configuration.short_otm, self.configuration.wing_otm

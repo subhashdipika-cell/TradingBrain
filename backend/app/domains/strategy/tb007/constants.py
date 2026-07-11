@@ -88,7 +88,10 @@ DEFAULT_MAX_HOLD_SESSIONS = 2
 
 # Premium paid IS the max loss (defined risk). Risk a small, fixed slice per
 # trade - the win rate is low by design, so sizing must survive the bleed.
-DEFAULT_REQUESTED_RISK = 0.01  # 1% of capital per convex bet
+# 2% (not 1%): a single near-ATM NIFTY lot (65 x ~Rs 100 premium ~ Rs 7.5k)
+# exceeds a 1% budget on a Rs 4L account, silently sizing every valid setup to
+# ZERO lots - the Jul-2026 real-data audit showed 25 valid entries all skipped.
+DEFAULT_REQUESTED_RISK = 0.02  # 2% of capital per convex bet
 MAX_STRATEGY_DRAWDOWN = 0.10
 MAX_DAILY_LOSS = 0.04
 
