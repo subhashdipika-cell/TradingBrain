@@ -273,8 +273,12 @@ def assess_freshness(
     else:
         status, emoji = "FRESH", "✅"
     # Week-over-week: if a prior run exists and NOTHING new arrived, that's the
-    # collector-stopped signal regardless of the absolute gap.
-    if prev_distinct is not None and not grew:
+    # collector-stopped signal — but only when at least one TRADING day has
+    # passed since the newest session. Two runs across a weekend/holiday (e.g.
+    # Sat test run, Sun scheduled run) legitimately see zero growth; the
+    # 2026-07-12 Sunday run false-alarmed STALE on data that was current as of
+    # Friday's close.
+    if prev_distinct is not None and not grew and gap >= 1:
         status, emoji = "STALE", "🛑"
 
     if status == "FRESH":
@@ -287,7 +291,7 @@ def assess_freshness(
             f"data lagging — newest session **{newest}** is {gap} trading days "
             f"old (holiday?), +{added} since last run · {distinct} total."
         )
-    elif prev_distinct is not None and not grew:
+    elif prev_distinct is not None and not grew and gap >= 1:
         msg = (
             f"**DATA STALE** — no new sessions since last run (still {distinct}); "
             f"newest **{newest}**. The AlphaEdge Dhan options collector may be "
