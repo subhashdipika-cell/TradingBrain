@@ -81,7 +81,14 @@ export function SettingsPanel() {
           </strong>
           {" · "}window {at.in_window ? "open now" : "closed now"}
           {at.running && " · forward test in progress"}
-          {at.decision && ` · today: ${at.decision}`}
+          {/* A stored decision belongs to last_day, which may be a PREVIOUS
+              day (e.g. Monday morning before the 10:20 window still holds
+              Saturday's "weekend skip") — label it honestly instead of
+              presenting stale state as "today". */}
+          {at.decision && (at.last_day === at.today
+            ? ` · today: ${at.decision}`
+            : ` · today: no decision yet (next check inside the window)` +
+              ` · last (${at.last_day}): ${at.decision}`)}
         </p>
       )}
       {!at && <p className="hint neg">AutoTrader status unavailable — backend offline?</p>}

@@ -146,6 +146,11 @@ def status() -> dict:
         "enabled": is_enabled(),
         "in_window": WINDOW_START_MIN <= mins <= WINDOW_END_MIN,
         "window": "10:20-14:30 IST",
+        # IST "today" so the UI can tell a fresh decision from a stale one —
+        # the stored decision belongs to last_day, which is a PREVIOUS day
+        # until the first in-window tick (e.g. Monday 09:57 still holds
+        # Saturday's weekend-skip). The frontend must not label that "today".
+        "today": now.strftime("%Y-%m-%d"),
         "last_day": st.get("last_day"),
         "decision": st.get("decision"),
         "last_export_month": st.get("last_export_month"),

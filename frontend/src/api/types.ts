@@ -197,6 +197,8 @@ export interface AutoTraderStatus {
   enabled: boolean;
   in_window: boolean;
   window: string;
+  /** Backend's IST "today" — compare with last_day to spot a stale decision. */
+  today: string;
   last_day: string | null;
   decision: string | null;
   running: boolean;
