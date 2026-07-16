@@ -63,6 +63,12 @@ ENTRY_OPEN_CUTOFF = time(10, 15)
 GAP_DAMPEN_THRESHOLD_PCT = 0.75
 GAP_DAMPEN_FACTOR = 0.5
 
+# Affordability walk for directional debits (indivisible option lots): when one
+# lot of the ATM strike busts the risk budget, step OTM to a cheaper strike that
+# fits - bounded so it never drifts into far-OTM lottery territory.
+AFFORD_MAX_STEPS = 4      # at most this many strikes away from ATM
+AFFORD_MIN_PREMIUM = 20.0  # Rs - don't buy cheaper legs than this
+
 
 @dataclass(frozen=True, slots=True)
 class EngineConfig:
@@ -506,17 +512,42 @@ class TradingEngine:
             strategy.reset()
             return
         premium = snapshot.option_price(right, strike)
-        if premium <= 0:
-            strategy.reset()
-            return
 
         risk_fraction = signal.requested_risk or 0.02
         budget = self.portfolio.capital.starting_capital * risk_fraction
-        premium_per_lot = premium * spec.lot_size
-        lots = int(budget // premium_per_lot)
-        if lots <= 0:
+
+        def _lots_for(prem: float) -> int:
+            return int(budget // (prem * spec.lot_size)) if prem > 0 else 0
+
+        lots = _lots_for(premium)
+        if lots <= 0 and premium > 0:
+            # Affordability walk (indivisible lots): one lot of the ATM strike
+            # busts the risk budget, so a valid directional view would be skipped
+            # over a rounding gap. Step OTM (cheaper premium in the trade
+            # direction) until one lot fits - bounded by AFFORD_MAX_STEPS and a
+            # premium floor so this never buys far-OTM lottery tickets.
+            candidates = sorted(snapshot.option_chain.strikes())
+            otm = (
+                [s for s in candidates if s > strike]
+                if bullish
+                else [s for s in reversed(candidates) if s < strike]
+            )
+            for cand in otm[:AFFORD_MAX_STEPS]:
+                p = snapshot.option_price(right, cand)
+                if p >= AFFORD_MIN_PREMIUM and _lots_for(p) >= 1:
+                    self.journal.record_event(
+                        snapshot.timestamp,
+                        f"AFFORD: ATM {strike:.0f} premium {premium:.2f} busts the "
+                        f"{risk_fraction:.1%} budget for one lot - stepped to "
+                        f"{cand:.0f} (premium {p:.2f})",
+                    )
+                    strike, premium = cand, p
+                    break
+            lots = _lots_for(premium) if premium > 0 else 0
+        if premium <= 0 or lots <= 0:
             strategy.reset()
             return
+        premium_per_lot = premium * spec.lot_size
         units = lots * spec.lot_size
 
         gate = self.risk.approve_entry(
