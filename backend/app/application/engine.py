@@ -285,9 +285,58 @@ class TradingEngine:
                 return  # regime has no strategy mapped -> sit out
             signal = active.generate_signal(context)
             if signal is not None and signal.is_entry:
+                if not self._passes_level_checks(signal, snapshot, context):
+                    return
                 self._open_position(signal, snapshot, active, context)
         else:
             self._manage_open_trade(snapshot, context)
+
+    # ------------------------------------------------------------------
+    # Context awareness ("human touch") - level map gates for directional entries
+    # ------------------------------------------------------------------
+    def _passes_level_checks(
+        self, signal: Signal, snapshot: MarketSnapshot, context: MarketContext
+    ) -> bool:
+        """Freshness / location / R:R-to-structure gates + barrier-aware target
+        cap (see domains/market/levels.py). Only directional signals with
+        underlying geometry are gated - credit/volatility structures pass.
+        Journals every skip so the record answers "why was this not taken?".
+        A level-engine failure never blocks trading."""
+        try:
+            from app.domains.market.levels import check_signal, get_config
+
+            cfg = get_config()
+            chk = check_signal(signal, context, self._recent_candles, cfg)
+            signal.metadata["level_check"] = {
+                "violations": list(chk.violations),
+                "rr_structure": chk.rr_structure,
+                "extension": chk.extension,
+                "barrier": chk.barrier,
+                "enforced": bool(cfg["enforce"]),
+            }
+            if chk.violations:
+                mode = "LEVELS" if cfg["enforce"] else "LEVELS (shadow)"
+                self.journal.record_event(
+                    snapshot.timestamp,
+                    f"{mode}: {signal.strategy} {signal.position_side.value} skipped - "
+                    + " | ".join(chk.violations),
+                )
+                if not chk.ok:
+                    return False
+            if chk.capped_target is not None and cfg["enforce"]:
+                old = signal.take_profit
+                signal.take_profit = chk.capped_target
+                self.journal.record_event(
+                    snapshot.timestamp,
+                    f"LEVELS: target capped {old:g} -> {chk.capped_target:g} to stay "
+                    f"inside {chk.barrier:g} ({chk.barrier_kind}).",
+                )
+            return True
+        except Exception as exc:  # noqa: BLE001 - never let the map block trading
+            self.journal.record_event(
+                snapshot.timestamp, f"LEVELS: check failed (signal passed) - {exc}"
+            )
+            return True
 
     # ------------------------------------------------------------------
     # Position lifecycle
