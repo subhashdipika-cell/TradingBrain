@@ -27,14 +27,22 @@ export function ForwardTestPanel() {
     };
   }, []);
 
-  // Poll every 3s while a run is in progress.
+  // Poll every 3s while a run is in progress; otherwise a 30s heartbeat so the
+  // "NSE open/closed" badge (and AutoTrader status) stay truthful without a
+  // manual page refresh. Display only — the backend AutoTrader trades on its
+  // own regardless of whether this page is open.
   useEffect(() => {
-    if (status?.running && pollRef.current == null) {
-      pollRef.current = window.setInterval(fetchStatus, 3000);
-    } else if (!status?.running && pollRef.current != null) {
+    if (pollRef.current != null) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    pollRef.current = window.setInterval(fetchStatus, status?.running ? 3000 : 30000);
+    return () => {
+      if (pollRef.current != null) {
+        window.clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
   }, [status?.running]);
 
   const start = async () => {

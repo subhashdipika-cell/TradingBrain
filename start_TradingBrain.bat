@@ -5,8 +5,13 @@ echo   Starting TradingBrain
 echo ============================================
 
 REM --- Backend (FastAPI on port 8200) ---
+REM NO --reload here: the reloader watches the whole backend tree, and the
+REM AutoTrader/results write JSON state files inside it — each write restarted
+REM the process and KILLED the in-flight forward-test thread (this silently
+REM ended the 2026-07-17 auto run seconds after its 10:21 launch). Use
+REM start_TradingBrain_dev.bat when actively developing.
 cd /d "%~dp0backend"
-start "TradingBrain Backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload"
+start "TradingBrain Backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8200"
 
 REM --- Frontend (Vite dev server on port 5174) ---
 cd /d "%~dp0frontend"
