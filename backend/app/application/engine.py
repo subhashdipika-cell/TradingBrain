@@ -63,6 +63,11 @@ ENTRY_OPEN_CUTOFF = time(10, 15)
 GAP_DAMPEN_THRESHOLD_PCT = 0.75
 GAP_DAMPEN_FACTOR = 0.5
 
+# Short-gamma dampener for credit structures (TB001 flags it via GreeksService):
+# inside ~2 sessions of expiry the ATM straddle's delta swings ~2-3x harder per
+# 1% move. Size down rather than skip - the 0-DTE decay IS the seller's edge.
+GAMMA_DAMPEN_FACTOR = 0.5
+
 # Affordability walk for directional debits (indivisible option lots): when one
 # lot of the ATM strike busts the risk budget, step OTM to a cheaper strike that
 # fits - bounded so it never drifts into far-OTM lottery territory.
@@ -414,6 +419,17 @@ class TradingEngine:
             and abs(context.today_gap_pct) >= GAP_DAMPEN_THRESHOLD_PCT
         ):
             allocation *= GAP_DAMPEN_FACTOR
+
+        # High-gamma dampener: near expiry the same 1% move swings a short
+        # straddle's delta ~3x harder. TB001 flags it (GreeksService); we size
+        # down rather than skip, because 0-DTE decay is the seller's edge.
+        if signal.metadata.get("high_gamma"):
+            allocation *= GAMMA_DAMPEN_FACTOR
+            self.journal.record_event(
+                snapshot.timestamp,
+                f"GAMMA: {signal.metadata.get('gamma_per_pct')} delta per 1% move "
+                f"- risk allocation halved.",
+            )
 
         sizing = self.sizer.size_for_margin(
             capital=self.portfolio.capital.starting_capital,
@@ -1080,6 +1096,22 @@ class TradingEngine:
             context.max_put_oi_strike = put_wall[0] if put_wall else None
             context.pcr = chain.put_call_oi_ratio()
             context.max_pain_strike = chain.max_pain_strike()
+
+        # ── ATM Greeks (the straddle a short-premium structure is exposed to) ──
+        # Without this, context.delta/gamma/theta stayed at their 0.0 defaults,
+        # so TB001's GreeksService gates could never fire (abs(0) >= threshold
+        # is always False) - the gamma guard was dead by omission, not design.
+        atm = chain.nearest_strike(snapshot.spot)
+        if atm is not None:
+            atm_call = chain.get(atm, OptionRight.CALL)
+            atm_put = chain.get(atm, OptionRight.PUT)
+            if atm_call is not None and atm_put is not None:
+                # Straddle-equivalent exposure: gamma/theta/vega add across the
+                # two legs; delta nets (near zero at the money, by construction).
+                context.delta = atm_call.greeks.delta + atm_put.greeks.delta
+                context.gamma = atm_call.greeks.gamma + atm_put.greeks.gamma
+                context.theta = atm_call.greeks.theta + atm_put.greeks.theta
+                context.vega = atm_call.greeks.vega + atm_put.greeks.vega
 
         # ── Market structure from indicators (drives regime + strategy routing) ──
         self._recent_candles.append(snapshot.candle)

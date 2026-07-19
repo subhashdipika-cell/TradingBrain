@@ -63,15 +63,44 @@ class GreeksService:
         """
         return snapshot.theta > 0.0
 
+    def gamma_per_pct(
+        self,
+        snapshot: GreeksSnapshot,
+        spot: float,
+    ) -> float:
+        """
+        Delta change per 1% move in the underlying - the practical read of
+        gamma risk for a short-premium structure.
+
+        Raw gamma scales as 1/S, so a NIFTY ATM straddle sits around 0.002
+        while an equity option can be 100x that. Normalising by spot makes
+        the number comparable across underlyings AND across expiries:
+
+            ~0.4 at 7 DTE | ~0.6 at 3 DTE | ~1.1 at 1 DTE | ~2.0 intraday-expiry
+        """
+        if spot <= 0:
+            return 0.0
+        return abs(snapshot.gamma) * spot * 0.01
+
     def is_high_gamma(
         self,
         snapshot: GreeksSnapshot,
-        threshold: float = 0.10,
+        spot: float | None = None,
+        threshold: float = 0.8,
     ) -> bool:
         """
-        Determine whether gamma exceeds the threshold.
+        True when the ATM straddle's delta would move by >= ``threshold`` per
+        1% move in the underlying.
+
+        The default 0.8 starts firing roughly inside the last two sessions of
+        an expiry - exactly where a short-gamma structure is most fragile.
+        NOTE: the old signature compared RAW gamma against 0.10, which for an
+        index (gamma ~0.002) could never be true - the gate was dead by
+        arithmetic. Pass ``spot`` to use the normalised measure.
         """
-        return abs(snapshot.gamma) >= threshold
+        if spot is None or spot <= 0:
+            return abs(snapshot.gamma) >= threshold
+        return self.gamma_per_pct(snapshot, spot) >= threshold
 
     def is_high_delta(
         self,

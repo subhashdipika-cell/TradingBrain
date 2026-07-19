@@ -81,11 +81,22 @@ class TB001Strategy(BaseStrategy):
             self.regime_detector.detect(context)
         )
 
-        # Read Greeks.
-        _ = self.greeks.get_snapshot(context)
+        # Read Greeks. The snapshot now DRIVES sizing: a short-premium
+        # structure is short gamma, so as expiry approaches the same 1% move
+        # swings delta ~3x harder. We do not block (0-DTE decay is the
+        # seller's edge - see the expiry-day analysis), we halve the risk
+        # allocation, mirroring the gap dampener.
+        greeks = self.greeks.get_snapshot(context)
+        spot = context.last_price or context.close_price
+        high_gamma = self.greeks.is_high_gamma(greeks, spot)
 
         # Core Strategy
         signal = self.core_layer.evaluate(context)
+        if signal is not None and high_gamma:
+            signal.metadata["high_gamma"] = True
+            signal.metadata["gamma_per_pct"] = round(
+                self.greeks.gamma_per_pct(greeks, spot), 3
+            )
 
         # Tactical Layer
         signal = self.tactical_layer.evaluate(
