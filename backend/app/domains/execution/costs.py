@@ -12,13 +12,18 @@ Charge structure (per executed options order), as configured by ``CostRates``:
 - Brokerage           : flat per order (discount-broker model), capped by a %.
 - STT                 : 0.10% of premium, SELL side only (options).
 - Exchange txn charges: ~0.03503% of premium, both sides (NSE).
+- IPFT                : 0.0005% of premium (Rs 50 / crore), both sides (NSE).
 - SEBI charges        : 0.0001% of premium (Rs 10 / crore), both sides.
 - Stamp duty          : 0.003% of premium, BUY side only.
-- GST                 : 18% of (brokerage + exchange + SEBI).
+- GST                 : 18% of (brokerage + exchange + IPFT + SEBI).
 
 NOTE: statutory rates are revised periodically by SEBI/exchanges (e.g. STT on
 options sell rose to 0.10% on 2024-10-01). Defaults below reflect that era and
 are fully configurable - verify against your broker's contract note.
+
+Kept in step with AlphaEdge (src/engines/costs.js) and OptionMaster
+(backend/optionmaster/costs/calculator.py) - if you change a rate here, change
+it there too or the apps' P&L stops being comparable.
 
 Author: TradingBrain
 """
@@ -40,9 +45,10 @@ class CostRates:
     brokerage_pct_cap: float = 0.0
     stt_sell_pct: float = 0.0010  # 0.10% on sell premium (options)
     exchange_txn_pct: float = 0.0003503  # NSE options, both sides
+    ipft_pct: float = 0.000005  # Investor Protection Fund, Rs 50 / crore, both sides
     sebi_pct: float = 0.000001  # Rs 10 / crore, both sides
     stamp_buy_pct: float = 0.00003  # 0.003% on buy premium
-    gst_pct: float = 0.18  # on brokerage + exchange + sebi
+    gst_pct: float = 0.18  # on brokerage + exchange + ipft + sebi
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +58,7 @@ class CostBreakdown:
     brokerage: float = 0.0
     stt: float = 0.0
     exchange: float = 0.0
+    ipft: float = 0.0
     sebi: float = 0.0
     stamp: float = 0.0
     gst: float = 0.0
@@ -62,6 +69,7 @@ class CostBreakdown:
             self.brokerage
             + self.stt
             + self.exchange
+            + self.ipft
             + self.sebi
             + self.stamp
             + self.gst
@@ -109,14 +117,16 @@ class IndianOptionsCostModel(CostModel):
             brokerage = r.brokerage_per_order
         stt = 0.0 if is_buy else r.stt_sell_pct * turnover
         exchange = r.exchange_txn_pct * turnover
+        ipft = r.ipft_pct * turnover
         sebi = r.sebi_pct * turnover
         stamp = r.stamp_buy_pct * turnover if is_buy else 0.0
-        gst = r.gst_pct * (brokerage + exchange + sebi)
+        gst = r.gst_pct * (brokerage + exchange + ipft + sebi)
 
         return CostBreakdown(
             brokerage=brokerage,
             stt=stt,
             exchange=exchange,
+            ipft=ipft,
             sebi=sebi,
             stamp=stamp,
             gst=gst,

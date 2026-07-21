@@ -28,12 +28,31 @@ def test_costs_scale_with_turnover():
     assert big.total > small.total
 
 
-def test_gst_is_18pct_of_brokerage_exchange_sebi():
+def test_gst_is_18pct_of_brokerage_exchange_ipft_sebi():
     rates = CostRates()
     model = IndianOptionsCostModel(rates)
     c = model.charge(price=100.0, units=75, is_buy=False)
-    expected_gst = rates.gst_pct * (c.brokerage + c.exchange + c.sebi)
+    expected_gst = rates.gst_pct * (c.brokerage + c.exchange + c.ipft + c.sebi)
     assert abs(c.gst - expected_gst) < 1e-9
+
+
+def test_ipft_charged_on_both_sides_at_rs50_per_crore():
+    rates = CostRates()
+    model = IndianOptionsCostModel(rates)
+    sell = model.charge(price=100.0, units=75, is_buy=False)
+    buy = model.charge(price=100.0, units=75, is_buy=True)
+    expected = rates.ipft_pct * 100.0 * 75
+    assert abs(sell.ipft - expected) < 1e-9
+    assert abs(buy.ipft - expected) < 1e-9
+    # Rs 50 / crore of premium turnover.
+    assert abs(rates.ipft_pct * 1_00_00_000 - 50.0) < 1e-6
+
+
+def test_ipft_is_included_in_total():
+    c = IndianOptionsCostModel().charge(price=100.0, units=75, is_buy=False)
+    parts = c.brokerage + c.stt + c.exchange + c.ipft + c.sebi + c.stamp + c.gst
+    assert abs(c.total - parts) < 1e-9
+    assert c.ipft > 0
 
 
 def test_flat_model_has_no_statutory_charges():
