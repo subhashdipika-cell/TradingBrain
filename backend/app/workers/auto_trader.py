@@ -49,26 +49,89 @@ def _save(**patch) -> None:
     STATE_FILE.write_text(json.dumps(st, indent=2), encoding="utf-8")
 
 
+def _run_state(st: dict) -> str:
+    """Terminal-vs-running classification of the stored day.
+
+    `run_status` is authoritative. State files written before it existed only
+    recorded that a run was LAUNCHED, so infer: a "run ..." decision with no
+    recorded finish is an interrupted run, not a completed one.
+    """
+    rs = st.get("run_status")
+    if rs:
+        return rs
+    if str(st.get("decision", "")).startswith("run ") and not st.get("finished"):
+        return "running"
+    return "done"
+
+
+def _watch_run() -> None:
+    """Persist the run's OUTCOME once the runner settles.
+
+    Without this the state file only ever says a run was launched, so a day
+    that died mid-run looks identical to one that completed.
+    """
+    from app.api import forward_test as ft
+    while True:
+        time.sleep(5)
+        with ft._lock:
+            running = ft._state["running"]
+            run_id = ft._state["last_run_id"]
+            err = ft._state["error"]
+            finished = ft._state["finished_at"]
+        if running:
+            continue
+        _save(run_status="error" if err else "done",
+              finished=finished or _now_ist(), run_id=run_id, error=err)
+        logger.info("AutoTrader: run settled — run_id=%s error=%s", run_id, err)
+        return
+
+
+def _now_ist() -> str:
+    return datetime.now(IST).isoformat(timespec="seconds")
+
+
 def _tick() -> None:
     now = datetime.now(IST)
     today = now.strftime("%Y-%m-%d")
-    if _state().get("last_day") == today:
-        return                                   # already decided/traded today
     mins = now.hour * 60 + now.minute
-    if not (WINDOW_START_MIN <= mins <= WINDOW_END_MIN):
+    in_window = WINDOW_START_MIN <= mins <= WINDOW_END_MIN
+
+    st = _state()
+    if st.get("last_day") == today:
+        if _run_state(st) != "running":
+            return                               # decided AND settled today
+        # A run was launched but never recorded an outcome. Either it is still
+        # going in this process, or a previous process died mid-run (crash /
+        # laptop sleep) and the day would otherwise be lost silently.
+        from app.api import forward_test as ft
+        with ft._lock:
+            live = ft._state["running"]
+        if live:
+            return                               # genuinely still running
+        if not in_window:
+            # ASCII only - this string reaches consoles/logs on a cp1252 box.
+            _save(run_status="interrupted",
+                  decision=f"{st.get('decision', 'run')} - INTERRUPTED, window closed")
+            logger.warning("AutoTrader: run interrupted and the entry window has "
+                           "closed — no trade recorded for %s.", today)
+            return
+        logger.warning("AutoTrader: previous run interrupted — relaunching for %s.", today)
+        # fall through: re-decide and relaunch while the window is still open
+
+    if not in_window:
         return
 
     from app.domains.market.holidays import trading_day_check
     ok, why = trading_day_check()
     if not ok:
-        _save(last_day=today, decision=f"skip: {why}")
+        _save(last_day=today, decision=f"skip: {why}", run_status="skipped")
         logger.info("AutoTrader: %s", why)
         return
 
     from app.domains.intelligence import daily_brain
     plan = daily_brain.plan()
     if plan["strategy"] == "STAND_ASIDE":
-        _save(last_day=today,
+        _save(last_day=today, run_status="stand_aside",
               decision=f"STAND_ASIDE ({plan['regime']}): {plan['reason']}")
         logger.info("AutoTrader: brain stands aside today (%s) — %s",
                     plan["regime"], plan["reason"])
@@ -81,7 +144,8 @@ def _tick() -> None:
             return                               # manual run active — retry next tick
         ft._state.update(running=True, started_at=ft._now(), finished_at=None,
                          symbol="NIFTY", last_run_id=None, error=None)
-    _save(last_day=today, started=ft._now(),
+    _save(last_day=today, started=ft._now(), run_status="running",
+          finished=None, run_id=None, error=None,
           decision=f"run {plan['strategy']} ({plan['regime']})")
     logger.info("AutoTrader: launching brain forward test — regime=%s pick=%s",
                 plan["regime"], plan["strategy"])
@@ -90,6 +154,7 @@ def _tick() -> None:
         args=("NIFTY", settings.AUTO_FT_CAPITAL, "BRAIN", settings.AUTO_FT_MAX_POLLS),
         daemon=True,
     ).start()
+    threading.Thread(target=_watch_run, daemon=True, name="auto-trader-watch").start()
 
 
 def _month_end_export() -> None:
@@ -153,6 +218,12 @@ def status() -> dict:
         "today": now.strftime("%Y-%m-%d"),
         "last_day": st.get("last_day"),
         "decision": st.get("decision"),
+        # Outcome of the launched run — so the UI can distinguish "launched"
+        # from "actually finished" instead of showing a decision forever.
+        "run_status": _run_state(st) if st.get("last_day") else None,
+        "run_id": st.get("run_id"),
+        "run_error": st.get("error"),
+        "finished": st.get("finished"),
         "last_export_month": st.get("last_export_month"),
     }
 
