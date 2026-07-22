@@ -84,7 +84,18 @@ class DhanFeed(DataFeed):
         access_token: str,
         expiry: str | None = None,
         atm_range: int = 5,
-        poll_seconds: float = 3.5,  # Dhan option-chain limit ~1 req / 3s
+        # Dhan's option-chain limit (~1 req / 3s) is PER ACCOUNT, and the whole
+        # fleet shares one: AlphaEdge's collector (4 underlyings/min), its
+        # scanner, and OptionMaster's auto trader are all on the same bucket.
+        # At 3.5s a forward test consumed essentially the entire allowance —
+        # harmless while runs lasted ~105 s, but on 2026-07-22 max_polls went
+        # 30 -> 5000, so a run now holds the bucket for the whole session and
+        # measurably starved the others (collector throttles, OM chain calls
+        # succeeding 1 attempt in 6). 12 s still resolves an intraday
+        # seller's stop/target well inside its holding period and leaves ~70%
+        # of the allowance for everyone else. A 10:20 start reaches the 15:15
+        # square-off in ~1,475 polls, comfortably under AUTO_FT_MAX_POLLS.
+        poll_seconds: float = 12.0,
         rate: float = 0.065,
         max_polls: int | None = None,
         include_far: bool = False,
