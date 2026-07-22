@@ -438,6 +438,17 @@ class TradingEngine:
             lot_size=spec.lot_size,
         )
         if not sizing.is_tradable:
+            # Record WHY. This used to return silently, so a strategy whose
+            # structure outgrew the risk budget (e.g. OI-wall strikes widening
+            # the wings while allocation dropped 0.25 -> 0.02 on 2026-07-10)
+            # produced zero-trade days with no evidence anywhere.
+            self.journal.record_event(
+                snapshot.timestamp,
+                f"Entry skipped: 0 lots - {strategy.name} needs "
+                f"Rs{margin_per_lot:,.0f}/lot vs budget "
+                f"Rs{self.portfolio.capital.starting_capital * allocation:,.0f} "
+                f"(allocation {allocation:.3f})",
+            )
             strategy.reset()
             return
 

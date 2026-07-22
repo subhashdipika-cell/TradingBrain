@@ -37,8 +37,14 @@ _lock = threading.Lock()
 class ForwardTestRequest(BaseModel):
     symbol: str = "NIFTY"
     starting_capital: float = Field(default=400_000.0, gt=0)
-    max_polls: int = Field(default=30, ge=1, le=5000,
-                           description="Stop after N option-chain polls so the run ends and saves.")
+    # Default must give the run a chance to actually TRADE. The old default
+    # of 30 polls (~105 s) meant every morning-launched run finished half an
+    # hour before the 10:15 entry-open cutoff — six zero-trade "forward
+    # tests" in a row (07-13..07-22) were this, not strategy failures.
+    max_polls: int = Field(default=5000, ge=1, le=5200,
+                           description="Stop after N option-chain polls so the run ends and saves. "
+                                       "Default covers a full session; entries only begin after "
+                                       "the 10:15 IST open cutoff, so short runs cannot trade.")
     # "AUTO" = structure-aware regime selection; or a specific strategy TB001..TB006.
     strategy: str = "AUTO"
 
