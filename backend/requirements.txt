@@ -15,4 +15,7 @@ python-multipart
 
 httpx
 
+# Live / forward testing (Dhan). Optional: only needed for live data + orders.
+dhanhq
+
 pytest

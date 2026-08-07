@@ -55,15 +55,6 @@ DEFAULT_SHIFT_MULTIPLIER = 1.0
 
 DEFAULT_MIN_PREMIUM = 60.0
 
-# Require a meaningful premium relative to spot and defined risk. Absolute
-# premium alone is not portable across NIFTY/BANKNIFTY or different IV levels.
-MIN_BODY_PREMIUM_PCT = 0.0020
-MIN_CREDIT_TO_WIDTH = 0.22
-EXPIRY_MIN_CREDIT_TO_WIDTH = 0.30
-EXPIRY_ENTRY_CUTOFF = time(13, 30)
-EXPIRY_SQUARE_OFF = time(14, 45)
-EXPIRY_POSITION_RISK = 0.01
-
 DEFAULT_INITIAL_CAPITAL = 0.33
 
 # ---------------------------------------------------------------------

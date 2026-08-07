@@ -43,6 +43,8 @@ class BacktestFeed(DataFeed):
         base_iv: float = 0.12,
         rate: float = 0.065,
         seed: int = 42,
+        strikes_each_side: int = 10,
+        include_far: bool = False,
     ) -> None:
         self._spec = spec
         self._start_date = start_date
@@ -53,6 +55,8 @@ class BacktestFeed(DataFeed):
         self._base_iv = base_iv
         self._rate = rate
         self._rng = random.Random(seed)
+        self._strikes_each_side = strikes_each_side
+        self._include_far = include_far
 
     @property
     def spec(self) -> InstrumentSpec:
@@ -91,7 +95,25 @@ class BacktestFeed(DataFeed):
                     time_to_expiry=tte,
                     implied_vol=iv,
                     rate=self._rate,
+                    strikes_each_side=self._strikes_each_side,
                 )
+
+                far_chain = None
+                far_expiry = None
+                far_tte = 0.0
+                if self._include_far:
+                    far_expiry = next_weekly_expiry(expiry + timedelta(days=1))
+                    far_tte = time_to_expiry_years(moment, far_expiry)
+                    far_chain = build_synthetic_chain(
+                        spec=self._spec,
+                        spot=spot,
+                        expiry=far_expiry,
+                        timestamp=moment,
+                        time_to_expiry=far_tte,
+                        implied_vol=iv,
+                        rate=self._rate,
+                        strikes_each_side=self._strikes_each_side,
+                    )
 
                 yield MarketSnapshot(
                     timestamp=moment,
@@ -101,6 +123,9 @@ class BacktestFeed(DataFeed):
                     expiry=expiry,
                     time_to_expiry=tte,
                     option_chain=chain,
+                    far_chain=far_chain,
+                    far_expiry=far_expiry,
+                    far_time_to_expiry=far_tte,
                 )
 
     # ------------------------------------------------------------------

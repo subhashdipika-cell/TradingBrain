@@ -60,6 +60,23 @@ class Settings(BaseSettings):
     DHAN_CLIENT_ID: str = ""
     DHAN_ACCESS_TOKEN: str = ""
 
+    # Directory of accumulated Dhan option-chain CSVs (e.g. AlphaEdge's
+    # strategy-lab/data/options) for real-data backtests from the dashboard.
+    DHAN_DATA_DIR: str = "D:/AlphaEdge/strategy-lab/data/options"
+
+    # Optional AlphaEdge-style dhan_config.json ({access_token, client_id}) to
+    # reuse existing credentials for live/forward testing.
+    DHAN_CONFIG_PATH: str = "D:/AlphaEdge/strategy-lab/dhan_config.json"
+
+    # Where backtest/forward-test run results are persisted (JSON per run).
+    RESULTS_DIR: str = "results"
+
+    # Obsidian vault "raw trades" root. TradingBrain writes its daily reports
+    # and monthly rollups under <OBSIDIAN_TRADES_DIR>/tradingbrain/ for the vault
+    # to ingest and analyse. Shared destination across the four trading apps.
+    OBSIDIAN_TRADES_DIR: str = "E:/Obsidian/Trading_Mind/raw/trades"
+    OBSIDIAN_APP: str = "tradingbrain"
+
     # ------------------------------------------------------------------
     # CORS
     # ------------------------------------------------------------------

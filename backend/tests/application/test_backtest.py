@@ -6,11 +6,18 @@ from app.application.backtest import BacktestConfig, run_backtest
 
 
 def test_backtest_runs_and_produces_trades():
-    result = run_backtest(BacktestConfig(num_days=10, seed=42))
+    result = run_backtest(BacktestConfig(num_days=10, seed=42, strategy="TB001"))
     journal = result.journal
     assert journal.trade_count > 0
     assert len(journal.equity_curve) > 0
     assert isinstance(result.report, str) and "TB001 Backtest" in result.report
+
+
+def test_backtest_auto_selects_by_regime():
+    # Default AUTO routes calm/normal-vol synthetic data to a range seller.
+    result = run_backtest(BacktestConfig(num_days=10, seed=42))
+    assert result.journal.trade_count > 0
+    assert "AUTO (regime) Backtest" in result.report
 
 
 def test_backtest_is_deterministic():

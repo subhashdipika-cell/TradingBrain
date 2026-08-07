@@ -1,7 +1,16 @@
 import type {
   BacktestRequest,
   BacktestResponse,
+  DailyReport,
+  ExportResult,
+  ForwardTestRequest,
+  ForwardTestStartResponse,
+  ForwardTestStatus,
   HealthResponse,
+  LotSizes,
+  LotSizesRefresh,
+  ResultRecord,
+  ResultSummary,
 } from "./types";
 
 const BASE_URL =
@@ -26,14 +35,71 @@ export const api = {
     return request<HealthResponse>("/health");
   },
 
-  symbols(): Promise<{ symbols: string[] }> {
-    return request<{ symbols: string[] }>("/backtest/symbols");
+  symbols(): Promise<{ symbols: string[]; dhan_data_available: boolean }> {
+    return request<{ symbols: string[]; dhan_data_available: boolean }>(
+      "/backtest/symbols",
+    );
   },
 
-  runBacktest(payload: BacktestRequest): Promise<BacktestResponse> {
-    return request<BacktestResponse>("/backtest/run", {
+  strategies(): Promise<{ strategies: { name: string; description: string }[] }> {
+    return request<{ strategies: { name: string; description: string }[] }>(
+      "/backtest/strategies",
+    );
+  },
+
+  runBacktest(
+    payload: BacktestRequest,
+    realData = false,
+  ): Promise<BacktestResponse> {
+    const path = realData ? "/backtest/dhan" : "/backtest/run";
+    return request<BacktestResponse>(path, {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  },
+
+  listResults(): Promise<{ results: ResultSummary[] }> {
+    return request<{ results: ResultSummary[] }>("/results");
+  },
+
+  getResult(id: string): Promise<ResultRecord> {
+    return request<ResultRecord>(`/results/${id}`);
+  },
+
+  runForwardTest(payload: ForwardTestRequest): Promise<ForwardTestStartResponse> {
+    return request<ForwardTestStartResponse>("/forward-test/run", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+
+  forwardTestStatus(): Promise<ForwardTestStatus> {
+    return request<ForwardTestStatus>("/forward-test/status");
+  },
+
+  dailyReport(date?: string): Promise<DailyReport> {
+    return request<DailyReport>(`/reports/daily${date ? `?date=${date}` : ""}`);
+  },
+
+  exportDaily(date?: string): Promise<ExportResult> {
+    return request<ExportResult>(
+      `/reports/daily/export${date ? `?date=${date}` : ""}`,
+      { method: "POST" },
+    );
+  },
+
+  exportMonthly(month?: string): Promise<ExportResult> {
+    return request<ExportResult>(
+      `/reports/monthly/export${month ? `?month=${month}` : ""}`,
+      { method: "POST" },
+    );
+  },
+
+  lotSizes(): Promise<LotSizes> {
+    return request<LotSizes>("/instruments/lot-sizes");
+  },
+
+  refreshLotSizes(): Promise<LotSizesRefresh> {
+    return request<LotSizesRefresh>("/instruments/lot-sizes/refresh", { method: "POST" });
   },
 };

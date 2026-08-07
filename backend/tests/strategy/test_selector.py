@@ -14,8 +14,13 @@ from app.domains.shared.enums import (
 )
 from app.domains.strategy.contracts import MarketContext
 from app.domains.strategy.contracts.registry import StrategyRegistry
+from app.domains.strategy.credit_sellers import (
+    BullPutSpreadStrategy,
+    IronCondorStrategy,
+)
 from app.domains.strategy.selector import StrategySelector, default_selector
 from app.domains.strategy.tb001 import TB001Strategy
+from app.domains.strategy.tb002 import TB002Strategy
 
 
 def _ctx(**kwargs) -> MarketContext:
@@ -30,16 +35,23 @@ def _ctx(**kwargs) -> MarketContext:
     return MarketContext(**base)
 
 
-def test_selector_routes_ranging_to_tb001():
+def test_selector_routes_low_vol_range_to_iron_fly():
     selector = default_selector()
-    # Calm, low ADX -> RANGING -> TB001 selected.
-    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.NORMAL, adx=10))
+    # Calm, low ADX + low IV -> RANGING + low vol -> TB001 Iron Fly.
+    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.LOW, adx=10))
     assert isinstance(strategy, TB001Strategy)
 
 
-def test_selector_sits_out_trending():
+def test_selector_routes_normal_vol_range_to_iron_condor():
     selector = default_selector()
-    # Strong trend -> TRENDING -> no strategy mapped -> None.
+    # Range with normal/high IV -> TB004 Iron Condor (defined risk, wider).
+    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.NORMAL, adx=10))
+    assert isinstance(strategy, IronCondorStrategy)
+
+
+def test_selector_routes_uptrend_to_bull_put_spread():
+    selector = default_selector()
+    # Strong bullish trend -> TB005 Bull Put Spread (bullish credit).
     strategy = selector.select(
         _ctx(
             volatility_regime=VolatilityRegime.NORMAL,
@@ -47,13 +59,20 @@ def test_selector_sits_out_trending():
             trend=TrendDirection.BULLISH,
         )
     )
+    assert isinstance(strategy, BullPutSpreadStrategy)
+
+
+def test_selector_stands_aside_in_extreme_vol():
+    # Extreme volatility -> tails too fat to sell -> stand aside (no strategy).
+    selector = default_selector()
+    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.EXTREME))
     assert strategy is None
 
 
-def test_selector_sits_out_high_volatility():
+def test_selector_routes_reversal_to_tb002():
     selector = default_selector()
-    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.EXTREME))
-    assert strategy is None  # VOLATILE regime not mapped
+    strategy = selector.select_for_regime(MarketRegime.REVERSAL)
+    assert isinstance(strategy, TB002Strategy)
 
 
 def test_selector_caches_instances():

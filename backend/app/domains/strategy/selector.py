@@ -4,8 +4,9 @@ Strategy - Regime-Based Strategy Selector
 
 Routes the platform to the right strategy for the prevailing market regime.
 Theta harvesting (TB001) earns in calm, range-bound markets and bleeds in
-strong trends or volatility spikes - so the selector *gates* it by regime and
-will pick a different strategy (or none) when conditions don't suit it.
+strong trends or volatility spikes - so the selector *gates* it by regime.
+Directional reversal/breakout conditions can route to TB002, whose own setup
+validation decides whether the ICT layers are present.
 
 This is the meta-layer above the strategies: classify the regime, look up the
 strategy mapped to it, instantiate it from the :class:`StrategyRegistry`.
@@ -39,11 +40,32 @@ class StrategySelector:
         self._mapping: dict[MarketRegime, str] = {}
         self._default = default_strategy
         self._instances: dict[str, BaseStrategy] = {}
+        # Optional finer-grained router: (context) -> strategy name | None. When
+        # set it takes precedence over the coarse regime map so selection can use
+        # trend direction + volatility, not just the regime label.
+        self._resolver = None
+        # Strategies to initialise even if only reachable via the resolver.
+        self._roster: set[str] = set()
+
+    def set_resolver(self, resolver) -> "StrategySelector":
+        self._resolver = resolver
+        return self
+
+    def add_to_roster(self, *names: str) -> "StrategySelector":
+        for n in names:
+            if not StrategyRegistry.exists(n):
+                raise KeyError(f"Strategy '{n}' is not registered.")
+            self._roster.add(n)
+        return self
 
     # ------------------------------------------------------------------
     # Configuration
     # ------------------------------------------------------------------
-    def map_regime(self, regime: MarketRegime, strategy_name: str) -> "StrategySelector":
+    def map_regime(
+        self,
+        regime: MarketRegime,
+        strategy_name: str,
+    ) -> "StrategySelector":
         """Map a regime to a registered strategy name (chainable)."""
         if not StrategyRegistry.exists(strategy_name):
             raise KeyError(
@@ -75,6 +97,9 @@ class StrategySelector:
         """
         regime = self.classify(context)
         context.market_regime = regime
+        if self._resolver is not None:
+            name = self._resolver(context)
+            return self._instance(name) if name else None
         return self.select_for_regime(regime)
 
     def select_for_regime(self, regime: MarketRegime) -> BaseStrategy | None:
@@ -86,6 +111,13 @@ class StrategySelector:
     def active_mapping(self) -> dict[MarketRegime, str]:
         return dict(self._mapping)
 
+    def all_strategies(self) -> list[BaseStrategy]:
+        """Instantiate (once) and return every mapped/default strategy."""
+        names = set(self._mapping.values()) | set(self._roster)
+        if self._default is not None:
+            names.add(self._default)
+        return [self._instance(name) for name in sorted(names)]
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -96,20 +128,80 @@ class StrategySelector:
         return self._instances[name]
 
 
+def register_all_strategies() -> None:
+    """Register every built-in strategy (idempotent)."""
+    from app.domains.strategy.credit_sellers import CREDIT_STRATEGIES
+    from app.domains.strategy.tb001 import TB001Strategy
+    from app.domains.strategy.tb002 import TB002Strategy
+    from app.domains.strategy.tb008 import TB008Strategy
+
+    for cls in (TB001Strategy, TB002Strategy, TB008Strategy, *CREDIT_STRATEGIES):
+        if not StrategyRegistry.exists(cls.name):
+            StrategyRegistry.register(cls)
+
+
+def _structure_router(context: MarketContext) -> str | None:
+    """Pick the option-selling strategy that fits the current market structure.
+
+    Structure is read from indicators the engine populates on the context
+    (regime, trend direction, volatility). Mapping (confirmed with the user):
+
+      Range + low IV       -> TB001 Iron Fly (max theta, ATM)
+      Range + normal/high  -> TB004 Iron Condor (defined risk, wider)
+      Uptrend              -> TB005 Bull Put Spread
+      Downtrend            -> TB006 Bear Call Spread
+      Strong breakout/rev. -> TB002 (ICT directional debit)
+      Extreme vol / no edge-> stand aside (None)
+    """
+    from app.domains.shared.enums import TrendDirection, VolatilityRegime
+
+    regime = context.market_regime
+    trend = context.trend
+    vol = context.volatility_regime
+
+    if vol == VolatilityRegime.EXTREME:
+        return None  # stand aside — tails too fat to sell
+
+    if regime in (MarketRegime.RANGING, MarketRegime.UNKNOWN):
+        return "TB001" if vol == VolatilityRegime.LOW else "TB004"
+
+    if regime == MarketRegime.TRENDING:
+        if trend == TrendDirection.BULLISH:
+            return "TB005"
+        if trend == TrendDirection.BEARISH:
+            return "TB006"
+        return "TB004"
+
+    if regime in (MarketRegime.BREAKOUT, MarketRegime.REVERSAL):
+        return "TB002"  # strong directional displacement — ICT buyer
+
+    if regime == MarketRegime.VOLATILE:
+        if trend == TrendDirection.BULLISH:
+            return "TB005"
+        if trend == TrendDirection.BEARISH:
+            return "TB006"
+        return "TB004"
+
+    return "TB001"
+
+
 def default_selector() -> StrategySelector:
     """
-    Build the default selector wiring TB001 to the regimes where premium
-    selling is favourable, and sitting out trends/volatility spikes.
+    Build the structure-aware selector: it classifies the regime from indicators
+    and routes to the option-selling strategy that fits (Iron Fly / Iron Condor /
+    Bull Put / Bear Call), or TB002 for strong directional breakouts.
     """
-    from app.domains.strategy.tb001 import TB001Strategy
-
-    if not StrategyRegistry.exists(TB001Strategy.name):
-        StrategyRegistry.register(TB001Strategy)
+    register_all_strategies()
 
     selector = StrategySelector()
-    # Sell premium when the market is calm / range-bound.
-    selector.map_regime(MarketRegime.RANGING, TB001Strategy.name)
-    selector.map_regime(MarketRegime.UNKNOWN, TB001Strategy.name)
-    # TRENDING / VOLATILE / BREAKOUT / REVERSAL -> no strategy (sit out) until
-    # a directional/volatility strategy (TB002..) is registered for them.
+    # Coarse map (used if the resolver ever returns nothing + for lifecycle init).
+    selector.map_regime(MarketRegime.RANGING, "TB001")
+    selector.map_regime(MarketRegime.UNKNOWN, "TB001")
+    selector.map_regime(MarketRegime.VOLATILE, "TB004")
+    selector.map_regime(MarketRegime.TRENDING, "TB005")
+    selector.map_regime(MarketRegime.BREAKOUT, "TB002")
+    selector.map_regime(MarketRegime.REVERSAL, "TB002")
+    # Ensure every routable strategy is initialised, then wire the fine router.
+    selector.add_to_roster("TB001", "TB002", "TB003", "TB004", "TB005", "TB006")
+    selector.set_resolver(_structure_router)
     return selector

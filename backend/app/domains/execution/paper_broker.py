@@ -65,8 +65,13 @@ class PaperBroker(Broker):
     # ------------------------------------------------------------------
     def _reference_price(self, order: Order, snapshot: MarketSnapshot) -> float | None:
         if order.strike is not None and order.right is not None:
-            quote = snapshot.option_chain.get(order.strike, order.right)
-            return None if quote is None else quote.price
+            # Chain quote when present, else a Black-Scholes fallback so legs
+            # (e.g. hedge wings) whose strike has drifted out of the chain
+            # window can still be filled consistently. Calendar legs tagged
+            # "far" are priced against the next-expiry chain.
+            return snapshot.option_price(
+                order.right, order.strike, far=order.expiry_bucket == "far"
+            )
         # Non-option instrument: fill at the underlying close.
         return snapshot.spot
 

@@ -17,13 +17,18 @@ Author: TradingBrain
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from math import log, sqrt
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.domains.strategy.selector import StrategySelector
 
 from app.domains.analytics.journal import TradeJournal, TradeRecord
 from app.domains.execution.broker import Broker, Order
 from app.domains.execution.feed import DataFeed, MarketSnapshot
+from app.domains.market.indicators import analyse
 from app.domains.market.session import NSE_SESSION, TradingSession
 from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.position_sizing import PositionSizer
@@ -33,12 +38,17 @@ from app.domains.shared.enums import (
     ExitReason,
     OptionRight,
     OptionStructure,
-    TrendDirection,
+    PositionSide,
     VolatilityRegime,
 )
 from app.domains.strategy.contracts.context import MarketContext
 from app.domains.strategy.contracts.signal import Signal
 from app.domains.strategy.contracts.strategy import BaseStrategy
+
+
+# No NEW entries at/after this time (IST session time) — trades are squared
+# off at 15:15 (strategy configs), so later entries would be near-instant exits.
+ENTRY_CUTOFF = time(15, 5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,11 +70,13 @@ class _Leg:
     right: OptionRight
     strike: float
     side: str  # "BUY" (hedge/long) or "SELL" (write/short)
+    lots: int = 0  # per-leg lots (calendar legs carry their own ratio)
+    bucket: str = "near"  # "near" or "far" expiry (calendar strategies)
 
 
 @dataclass(slots=True)
 class _OpenTrade:
-    """Engine bookkeeping for one open (possibly hedged) option structure."""
+    """Engine bookkeeping for one open option structure (credit or debit)."""
 
     structure: str
     symbol: str
@@ -72,13 +84,23 @@ class _OpenTrade:
     lots: int
     units: int
     entry_time: datetime
-    entry_credit: float  # per-unit NET credit collected
-    target_credit: float  # per-unit cost-to-close target
-    stop_credit: float  # per-unit cost-to-close stop
+    entry_credit: float  # per-unit NET credit (CREDIT) / -debit paid (DEBIT)
+    target_credit: float  # per-unit cost-to-close target (CREDIT only)
+    stop_credit: float  # per-unit cost-to-close stop (CREDIT only)
     square_off: time
     realized_start: float  # portfolio realized PnL captured before entry
     entry_commission: float = 0.0  # transaction costs paid on entry
     legs: list[_Leg] = field(default_factory=list)
+    # Trade kind + attribution
+    kind: str = "CREDIT"  # "CREDIT" (Iron Fly/straddle) or "DEBIT" (long option)
+    strategy_name: str = "TB001"
+    # Directional (DEBIT) exits are driven by the underlying spot levels.
+    underlying_stop: float | None = None
+    underlying_target: float | None = None
+    # Calendar (CALENDAR) exits are driven by absolute rupee PnL vs margin.
+    margin: float = 0.0
+    profit_target: float = 0.0  # rupees; bank and leave
+    max_loss_rupees: float = 0.0  # rupees; hard stop
 
 
 class TradingEngine:
@@ -87,17 +109,25 @@ class TradingEngine:
     def __init__(
         self,
         *,
-        strategy: BaseStrategy,
+        strategy: BaseStrategy | None = None,
         feed: DataFeed,
         broker: Broker,
         portfolio: Portfolio,
         risk_engine: RiskEngine,
+        selector: "StrategySelector | None" = None,
         sizer: PositionSizer | None = None,
         journal: TradeJournal | None = None,
         config: EngineConfig | None = None,
         session: TradingSession = NSE_SESSION,
+        context_enricher: Callable[[MarketContext], None] | None = None,
     ) -> None:
+        if strategy is None and selector is None:
+            raise ValueError("Provide either a strategy or a selector.")
         self.strategy = strategy
+        self.selector = selector
+        # Optional hook to enrich context each bar (e.g. inject an ICT setup
+        # from candle data into metadata["tb002_setup"]).
+        self.context_enricher = context_enricher
         self.feed = feed
         self.broker = broker
         self.portfolio = portfolio
@@ -110,15 +140,30 @@ class TradingEngine:
         self.session = session
 
         self._open_trade: _OpenTrade | None = None
+        self._position_strategy: BaseStrategy | None = None
         self._current_day: date | None = None
-        self._recent_closes: list[float] = []
+        self._recent_candles: list = []  # rolling window for structure indicators
+
+    # ------------------------------------------------------------------
+    # Strategy resolution (single strategy or regime-based selector)
+    # ------------------------------------------------------------------
+    def _strategies(self) -> list[BaseStrategy]:
+        if self.selector is not None:
+            return self.selector.all_strategies()
+        return [self.strategy] if self.strategy is not None else []
+
+    def _select_for_entry(self, context: MarketContext) -> BaseStrategy | None:
+        if self.selector is not None:
+            return self.selector.select(context)  # also sets context.market_regime
+        return self.strategy
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
     def run(self) -> TradeJournal:
         """Run the engine to exhaustion over the feed and return the journal."""
-        self.strategy.initialize()
+        for strat in self._strategies():
+            strat.initialize()
         last: MarketSnapshot | None = None
 
         for snapshot in self.feed.stream():
@@ -141,7 +186,8 @@ class TradingEngine:
     # ------------------------------------------------------------------
     def _start_of_day(self, snapshot: MarketSnapshot) -> None:
         context = self._build_context(snapshot)
-        self.strategy.pre_market(context)
+        for strat in self._strategies():
+            strat.pre_market(context)
         self.risk.start_session(self.portfolio.equity())
         self.journal.record_event(
             snapshot.timestamp, f"Session start (equity {self.portfolio.equity():,.0f})"
@@ -151,16 +197,18 @@ class TradingEngine:
         if self._open_trade is not None:
             self._close_position(snapshot, ExitReason.TIME_EXIT)
         context = self._build_context(snapshot)
-        self.strategy.post_market(context)
+        for strat in self._strategies():
+            strat.post_market(context)
         self.journal.record_equity(snapshot.timestamp, self.portfolio.equity())
 
     # ------------------------------------------------------------------
     # Per-bar processing
     # ------------------------------------------------------------------
     def _on_bar(self, snapshot: MarketSnapshot) -> None:
-        self._update_market_history(snapshot)
         context = self._build_context(snapshot)
-        self.portfolio.mark_to_chain(snapshot.option_chain)
+        if self.context_enricher is not None:
+            self.context_enricher(context)
+        self._mark_portfolio(snapshot)
 
         if self.config.record_equity_each_bar:
             self.journal.record_equity(snapshot.timestamp, self.portfolio.equity())
@@ -176,20 +224,37 @@ class TradingEngine:
             return
 
         if self._open_trade is None:
-            signal = self.strategy.generate_signal(context)
+            # Platform-wide intraday entry cutoff: no NEW positions at/after
+            # 15:05 — every structure is squared off by 15:15, ahead of the
+            # 15:30 NSE close, so a late entry would be closed almost at once.
+            if snapshot.timestamp.time() >= ENTRY_CUTOFF:
+                return
+            active = self._select_for_entry(context)
+            if active is None:
+                return  # regime has no strategy mapped -> sit out
+            signal = active.generate_signal(context)
             if signal is not None and signal.is_entry:
-                self._open_position(signal, snapshot)
+                self._open_position(signal, snapshot, active)
         else:
             self._manage_open_trade(snapshot, context)
 
     # ------------------------------------------------------------------
     # Position lifecycle
     # ------------------------------------------------------------------
-    def _open_position(self, signal: Signal, snapshot: MarketSnapshot) -> None:
+    def _open_position(
+        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+    ) -> None:
         meta = signal.metadata
+        if isinstance(meta.get("calendar_legs"), list) and meta["calendar_legs"]:
+            # Two-expiry calendar structure (TB008).
+            self._open_calendar(signal, snapshot, strategy)
+            return
         leg_specs = meta.get("legs")
         if not isinstance(leg_specs, list) or not leg_specs:
-            self.strategy.reset()
+            # No explicit legs -> treat a directional signal as a long option
+            # (defined risk debit). This is how TB002's directional ICT view
+            # is expressed as an options trade.
+            self._open_directional(signal, snapshot, strategy)
             return
 
         spec = snapshot.spec
@@ -231,7 +296,7 @@ class TradingEngine:
             lot_size=spec.lot_size,
         )
         if not sizing.is_tradable:
-            self.strategy.reset()
+            strategy.reset()
             return
 
         entry_gate = self.risk.approve_entry(
@@ -241,72 +306,34 @@ class TradingEngine:
             self.journal.record_event(
                 snapshot.timestamp, f"Entry blocked: {entry_gate.reason}"
             )
-            self.strategy.reset()
+            strategy.reset()
             return
 
         realized_start = self.portfolio.realized_pnl()
 
-        # HEDGE-FIRST EXECUTION: submit BUY (protective) legs before SELL
-        # (written) legs so the broker only blocks the reduced spread margin.
+        # HEDGE-FIRST BASKET: order BUY (protective) legs before SELL (written)
+        # legs and submit as one basket so the broker blocks only the reduced
+        # spread margin.
         ordered = sorted(legs, key=lambda leg: 0 if leg.side == "BUY" else 1)
+        orders = [
+            Order(
+                symbol=spec.symbol,
+                instrument=leg.instrument,
+                quantity=sizing.units if leg.side == "BUY" else -sizing.units,
+                right=leg.right,
+                strike=leg.strike,
+                tag=f"{strategy.name}_ENTRY_{leg.side}",
+            )
+            for leg in ordered
+        ]
+        fills = self.broker.submit_basket(orders, snapshot)
         entry_commission = 0.0
-        actual_entry_credit = 0.0
-        filled_legs: list[_Leg] = []
-        failed_leg = False
-        for leg in ordered:
-            qty = sizing.units if leg.side == "BUY" else -sizing.units
-            fill = self.broker.submit(
-                Order(
-                    symbol=spec.symbol,
-                    instrument=leg.instrument,
-                    quantity=qty,
-                    right=leg.right,
-                    strike=leg.strike,
-                    tag=f"TB001_ENTRY_{leg.side}",
-                ),
-                snapshot,
-            )
-            if fill is None:
-                failed_leg = True
-                break
-            self._book_fill(fill, leg.right, leg.strike)
+        for fill in fills:
+            self._book_fill(fill, fill.order.right, fill.order.strike)
             entry_commission += fill.commission
-            actual_entry_credit += (
-                (-fill.quantity * fill.price) / sizing.units
-            )
-            filled_legs.append(leg)
-
-        # Multi-leg structures are atomic from the strategy's perspective.
-        # If any leg cannot be filled, flatten whatever did fill immediately
-        # and do not create a phantom open trade.
-        if failed_leg or len(filled_legs) != len(legs):
-            for leg in reversed(filled_legs):
-                qty = sizing.units if leg.side == "SELL" else -sizing.units
-                fill = self.broker.submit(
-                    Order(
-                        symbol=spec.symbol,
-                        instrument=leg.instrument,
-                        quantity=qty,
-                        right=leg.right,
-                        strike=leg.strike,
-                        tag="TB001_ENTRY_ROLLBACK",
-                    ),
-                    snapshot,
-                )
-                if fill is not None:
-                    self._book_fill(fill, leg.right, leg.strike)
-            self.strategy.reset()
-            self.journal.record_event(
-                snapshot.timestamp, "Entry cancelled: incomplete multi-leg fill"
-            )
-            return
-
-        if actual_entry_credit <= 0.0:
-            self.strategy.reset()
-            return
 
         target_pct = float(meta.get("target_profit_pct", 0.30))
-        stop_pct = float(meta.get("stop_loss_pct", 0.30))
+        stop_pct = float(meta.get("stop_loss_pct", 0.50))
         square_off = time.fromisoformat(str(meta.get("square_off_time", "15:15:00")))
 
         self._open_trade = _OpenTrade(
@@ -316,20 +343,221 @@ class TradingEngine:
             lots=sizing.lots,
             units=sizing.units,
             entry_time=snapshot.timestamp,
-            entry_credit=actual_entry_credit,
-            target_credit=actual_entry_credit * (1.0 - target_pct),
-            stop_credit=actual_entry_credit * (1.0 + stop_pct),
+            entry_credit=entry_credit,
+            target_credit=entry_credit * (1.0 - target_pct),
+            stop_credit=entry_credit * (1.0 + stop_pct),
             square_off=square_off,
             realized_start=realized_start,
             entry_commission=entry_commission,
             legs=legs,
+            kind="CREDIT",
+            strategy_name=strategy.name,
         )
+        self._position_strategy = strategy
         self.risk.record_trade()
         self.journal.record_event(
             snapshot.timestamp,
             f"ENTER {self._open_trade.structure} {spec.symbol} "
-            f"{body_strike:.0f} x{sizing.lots} credit {actual_entry_credit:.2f}"
+            f"{body_strike:.0f} x{sizing.lots} credit {entry_credit:.2f}"
             + (f" (margin/lot Rs {margin_per_lot:,.0f})" if wing_width else ""),
+        )
+
+    def _open_directional(
+        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+    ) -> None:
+        """
+        Express a directional signal (TB002 ICT view) as a long option - a
+        defined-risk debit: long CALL for a bullish/LONG signal, long PUT for a
+        bearish/SHORT signal. Sized so the premium paid (the max loss) stays
+        within ``requested_risk`` of capital.
+        """
+        spec = snapshot.spec
+        bullish = signal.position_side is PositionSide.LONG
+        right = OptionRight.CALL if bullish else OptionRight.PUT
+
+        strike = snapshot.option_chain.nearest_strike(snapshot.spot)
+        if strike is None:
+            strategy.reset()
+            return
+        premium = snapshot.option_price(right, strike)
+        if premium <= 0:
+            strategy.reset()
+            return
+
+        risk_fraction = signal.requested_risk or 0.02
+        budget = self.portfolio.capital.starting_capital * risk_fraction
+        premium_per_lot = premium * spec.lot_size
+        lots = int(budget // premium_per_lot)
+        if lots <= 0:
+            strategy.reset()
+            return
+        units = lots * spec.lot_size
+
+        gate = self.risk.approve_entry(
+            self.portfolio, new_capital=premium_per_lot * lots
+        )
+        if not gate.approved:
+            self.journal.record_event(
+                snapshot.timestamp, f"Entry blocked: {gate.reason}"
+            )
+            strategy.reset()
+            return
+
+        realized_start = self.portfolio.realized_pnl()
+        instrument = self._instrument(spec.symbol, strike, right)
+        fill = self.broker.submit(
+            Order(
+                symbol=spec.symbol,
+                instrument=instrument,
+                quantity=units,  # long
+                right=right,
+                strike=strike,
+                tag=f"{strategy.name}_ENTRY_LONG",
+            ),
+            snapshot,
+        )
+        if fill is None:
+            strategy.reset()
+            return
+        self._book_fill(fill, right, strike)
+
+        square_off = time(15, 15)
+        self._open_trade = _OpenTrade(
+            structure=(
+                OptionStructure.LONG_CALL.value
+                if bullish
+                else OptionStructure.LONG_PUT.value
+            ),
+            symbol=spec.symbol,
+            body_strike=strike,
+            lots=lots,
+            units=units,
+            entry_time=snapshot.timestamp,
+            entry_credit=-premium,  # debit
+            target_credit=0.0,
+            stop_credit=0.0,
+            square_off=square_off,
+            realized_start=realized_start,
+            entry_commission=fill.commission,
+            legs=[_Leg(instrument=instrument, right=right, strike=strike, side="BUY")],
+            kind="DEBIT",
+            strategy_name=strategy.name,
+            underlying_stop=signal.stop_loss,
+            underlying_target=signal.take_profit,
+        )
+        self._position_strategy = strategy
+        self.risk.record_trade()
+        self.journal.record_event(
+            snapshot.timestamp,
+            f"ENTER {self._open_trade.structure} {spec.symbol} {strike:.0f} "
+            f"x{lots} debit {premium:.2f} (stop {signal.stop_loss}, "
+            f"target {signal.take_profit})",
+        )
+
+    def _open_calendar(
+        self, signal: Signal, snapshot: MarketSnapshot, strategy: BaseStrategy
+    ) -> None:
+        """
+        Execute a two-expiry calendar structure (TB008). Near legs price/fill on
+        the near chain, far legs on the next-expiry chain. The structure's own
+        ratio is placed as-is, scaled by how many copies fit the margin budget.
+        """
+        meta = signal.metadata
+        spec = snapshot.spec
+        lot_size = spec.lot_size
+        base_margin = float(meta.get("margin", 0.0))
+        if base_margin <= 0:
+            strategy.reset()
+            return
+
+        budget = self.portfolio.capital.starting_capital * (
+            signal.requested_risk or self.config.capital_allocation
+        )
+        mult = int(budget // base_margin)
+        if mult < 1:
+            self.journal.record_event(
+                snapshot.timestamp, "Calendar skipped: margin exceeds budget"
+            )
+            strategy.reset()
+            return
+
+        gate = self.risk.approve_entry(self.portfolio, new_capital=base_margin * mult)
+        if not gate.approved:
+            self.journal.record_event(
+                snapshot.timestamp, f"Entry blocked: {gate.reason}"
+            )
+            strategy.reset()
+            return
+
+        realized_start = self.portfolio.realized_pnl()
+
+        # Build legs; submit hedges (BUY) before writes (SELL).
+        legs: list[_Leg] = []
+        for spec_leg in meta["calendar_legs"]:
+            right = self._right(spec_leg["right"])
+            bucket = str(spec_leg.get("expiry_bucket", "near"))
+            legs.append(
+                _Leg(
+                    instrument=self._instrument(
+                        spec.symbol, float(spec_leg["strike"]), right, bucket
+                    ),
+                    right=right,
+                    strike=float(spec_leg["strike"]),
+                    side=str(spec_leg["side"]).upper(),
+                    lots=int(spec_leg["lots"]) * mult,
+                    bucket=bucket,
+                )
+            )
+
+        entry_commission = 0.0
+        for leg in sorted(legs, key=lambda x: 0 if x.side == "BUY" else 1):
+            units = leg.lots * lot_size
+            fill = self.broker.submit(
+                Order(
+                    symbol=spec.symbol,
+                    instrument=leg.instrument,
+                    quantity=units if leg.side == "BUY" else -units,
+                    right=leg.right,
+                    strike=leg.strike,
+                    expiry_bucket=leg.bucket,
+                    tag=f"{strategy.name}_ENTRY_{leg.side}_{leg.bucket}",
+                ),
+                snapshot,
+            )
+            if fill is None:
+                continue
+            self._book_fill(fill, leg.right, leg.strike)
+            entry_commission += fill.commission
+
+        profit_target = float(meta.get("profit_target", 0.0)) * mult
+        max_loss = abs(float(meta.get("max_loss", 0.0))) * mult
+
+        self._open_trade = _OpenTrade(
+            structure=str(meta.get("structure", "DOUBLE_CALENDAR")),
+            symbol=spec.symbol,
+            body_strike=snapshot.spot,
+            lots=mult,
+            units=0,
+            entry_time=snapshot.timestamp,
+            entry_credit=0.0,
+            target_credit=0.0,
+            stop_credit=0.0,
+            square_off=time(15, 15),
+            realized_start=realized_start,
+            entry_commission=entry_commission,
+            legs=legs,
+            kind="CALENDAR",
+            strategy_name=strategy.name,
+            margin=base_margin * mult,
+            profit_target=profit_target,
+            max_loss_rupees=max_loss,
+        )
+        self._position_strategy = strategy
+        self.risk.record_trade()
+        self.journal.record_event(
+            snapshot.timestamp,
+            f"ENTER {self._open_trade.structure} {spec.symbol} x{mult} "
+            f"(margin Rs {base_margin * mult:,.0f}, target Rs {profit_target:,.0f})",
         )
 
     def _manage_open_trade(
@@ -338,37 +566,68 @@ class TradingEngine:
         trade = self._open_trade
         assert trade is not None
 
-        cost_to_close = self._cost_to_close(snapshot, trade)
-        if cost_to_close is None:
-            return
-
         reason: ExitReason | None = None
-        if cost_to_close <= trade.target_credit:
-            reason = ExitReason.TARGET
-        elif cost_to_close >= trade.stop_credit:
-            reason = ExitReason.STOP_LOSS
-        elif snapshot.timestamp.time() >= trade.square_off:
-            reason = ExitReason.TIME_EXIT
+        if trade.kind == "CALENDAR":
+            unrealized = self.portfolio.unrealized_pnl()
+            if unrealized >= trade.profit_target > 0:
+                reason = ExitReason.TARGET
+            elif trade.max_loss_rupees > 0 and unrealized <= -trade.max_loss_rupees:
+                reason = ExitReason.STOP_LOSS
+        elif trade.kind == "DEBIT":
+            reason = self._directional_exit(snapshot, trade)
         else:
-            override = self.strategy.manage_position(context)
+            cost_to_close = self._cost_to_close(snapshot, trade)
+            if cost_to_close is None:
+                return
+            if cost_to_close <= trade.target_credit:
+                reason = ExitReason.TARGET
+            elif cost_to_close >= trade.stop_credit:
+                reason = ExitReason.STOP_LOSS
+
+        if reason is None and snapshot.timestamp.time() >= trade.square_off:
+            reason = ExitReason.TIME_EXIT
+
+        if reason is None and self._position_strategy is not None:
+            override = self._position_strategy.manage_position(context)
             if override is not None and override.is_exit:
                 reason = ExitReason.STRATEGY_EXIT
 
         if reason is not None:
             self._close_position(snapshot, reason)
 
+    def _directional_exit(
+        self, snapshot: MarketSnapshot, trade: _OpenTrade
+    ) -> ExitReason | None:
+        """Spot-based target/stop for a long-option directional trade."""
+        spot = snapshot.spot
+        bullish = trade.structure == OptionStructure.LONG_CALL.value
+        if bullish:
+            if trade.underlying_target is not None and spot >= trade.underlying_target:
+                return ExitReason.TARGET
+            if trade.underlying_stop is not None and spot <= trade.underlying_stop:
+                return ExitReason.STOP_LOSS
+        else:
+            if trade.underlying_target is not None and spot <= trade.underlying_target:
+                return ExitReason.TARGET
+            if trade.underlying_stop is not None and spot >= trade.underlying_stop:
+                return ExitReason.STOP_LOSS
+        return None
+
     def _close_position(self, snapshot: MarketSnapshot, reason: ExitReason) -> None:
         trade = self._open_trade
         if trade is None:
             return
 
+        lot_size = snapshot.spec.lot_size
         # Close SHORT (written) legs first so the position never becomes more
         # naked during unwind, then close the long hedges.
         ordered = sorted(trade.legs, key=lambda leg: 0 if leg.side == "SELL" else 1)
         exit_commission = 0.0
         for leg in ordered:
-            # Reverse the entry: buy back shorts, sell longs.
-            qty = trade.units if leg.side == "SELL" else -trade.units
+            # Calendar legs carry their own lots (ratio); other structures use
+            # the single per-structure unit count.
+            units = leg.lots * lot_size if trade.kind == "CALENDAR" else trade.units
+            qty = units if leg.side == "SELL" else -units
             fill = self.broker.submit(
                 Order(
                     symbol=trade.symbol,
@@ -376,7 +635,8 @@ class TradingEngine:
                     quantity=qty,
                     right=leg.right,
                     strike=leg.strike,
-                    tag=f"TB001_EXIT_{leg.side}",
+                    expiry_bucket=leg.bucket,
+                    tag=f"{trade.strategy_name}_EXIT_{leg.side}",
                 ),
                 snapshot,
             )
@@ -388,16 +648,17 @@ class TradingEngine:
         # Net PnL already includes all costs (booked into realized at fill).
         trade_pnl = self.portfolio.realized_pnl() - trade.realized_start
         total_commission = trade.entry_commission + exit_commission
+        entry_value = abs(trade.entry_credit) * trade.units
 
         self.journal.record_trade(
             TradeRecord(
-                strategy=self.strategy.name,
+                strategy=trade.strategy_name,
                 symbol=trade.symbol,
                 structure=trade.structure,
                 entry_time=trade.entry_time,
                 exit_time=snapshot.timestamp,
-                entry_value=trade.entry_credit * trade.units,
-                exit_value=trade_pnl + trade.entry_credit * trade.units,
+                entry_value=entry_value,
+                exit_value=entry_value + trade_pnl,
                 pnl=trade_pnl,
                 commission=total_commission,
                 exit_reason=reason.value,
@@ -410,13 +671,40 @@ class TradingEngine:
             f"{trade.body_strike:.0f} pnl Rs {trade_pnl:,.0f}",
         )
 
+        # Allow a fresh entry later in the session by the strategy that opened.
+        if self._position_strategy is not None:
+            self._position_strategy.reset()
         self._open_trade = None
-        # Allow a fresh entry later in the session.
-        self.strategy.reset()
+        self._position_strategy = None
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _mark_portfolio(self, snapshot: MarketSnapshot) -> None:
+        """
+        Mark every open option leg to a price - chain quote when present, else
+        a Black-Scholes fallback. Marking *all* legs (even those whose strike
+        drifted out of the chain window) keeps a hedged structure's MTM
+        balanced instead of looking spuriously naked.
+        """
+        trade = self._open_trade
+        if trade is not None and trade.kind == "CALENDAR":
+            # Price far legs against the next-expiry chain (not the near one).
+            for leg in trade.legs:
+                pos = self.portfolio.holdings.get(leg.instrument)
+                if pos is not None:
+                    pos.mark(
+                        snapshot.option_price(
+                            leg.right, leg.strike, far=leg.bucket == "far"
+                        )
+                    )
+        else:
+            for position in self.portfolio.open_positions():
+                if position.strike is None or position.right is None:
+                    continue
+                position.mark(snapshot.option_price(position.right, position.strike))
+        self.portfolio.capital.update_high_water_mark(self.portfolio.unrealized_pnl())
+
     def _book_fill(self, fill, right: OptionRight, strike: float) -> None:
         self.portfolio.apply_fill(
             symbol=fill.symbol,
@@ -440,17 +728,20 @@ class TradingEngine:
         just the current body premium; for an Iron Fly it nets the wings.
         Profit when this falls below the entry credit.
         """
-        chain = snapshot.option_chain
         net = 0.0
         for leg in trade.legs:
-            quote = chain.get(leg.strike, leg.right)
-            if quote is None:
-                return None
-            net += quote.price if leg.side == "SELL" else -quote.price
+            price = snapshot.option_price(leg.right, leg.strike)
+            net += price if leg.side == "SELL" else -price
         return net
 
-    def _instrument(self, symbol: str, strike: float, right: OptionRight) -> str:
-        return f"{symbol}{strike:.0f}{right.value[0]}E"
+    def _instrument(
+        self, symbol: str, strike: float, right: OptionRight, bucket: str = "near"
+    ) -> str:
+        # Far legs get a suffix so near/far same-strike legs are distinct
+        # positions (a calendar can be short near CE and long far CE at the
+        # same strike).
+        suffix = "_F" if bucket == "far" else ""
+        return f"{symbol}{strike:.0f}{right.value[0]}E{suffix}"
 
     @staticmethod
     def _right(value: object) -> OptionRight:
@@ -475,11 +766,7 @@ class TradingEngine:
             high_price=snapshot.candle.high,
             low_price=snapshot.candle.low,
             implied_volatility=snapshot.implied_vol,
-            historical_volatility=self._historical_volatility(),
-            ema_fast=self._ema(8),
-            ema_slow=self._ema(21),
-            trend=self._trend(),
-            adx=self._trend_strength(),
+            vix=snapshot.vix,
             is_market_open=self.session.is_open(ts),
             is_expiry=(snapshot.expiry == ts.date()),
             minutes_from_open=self.session.minutes_from_open(ts),
@@ -487,59 +774,26 @@ class TradingEngine:
         )
         context.metadata["option_chain"] = snapshot.option_chain
         context.metadata["strike_step"] = spec.strike_step
+        context.metadata["lot_size"] = spec.lot_size
+        if snapshot.far_chain is not None:
+            context.metadata["option_chain_far"] = snapshot.far_chain
+
+        # ── Market structure from indicators (drives regime + strategy routing) ──
+        self._recent_candles.append(snapshot.candle)
+        if len(self._recent_candles) > 250:
+            self._recent_candles = self._recent_candles[-250:]
+        struct = analyse(self._recent_candles, iv=snapshot.implied_vol)
+        if struct is not None:
+            context.ema_fast = struct.ema_fast
+            context.ema_slow = struct.ema_slow
+            context.adx = struct.adx
+            context.atr = struct.atr
+            context.trend = struct.trend
+            context.volatility_regime = struct.vol_regime
+            context.indicators.update(
+                {"rsi": struct.rsi, "adx": struct.adx, "atr": struct.atr}
+            )
         return context
-
-    def _update_market_history(self, snapshot: MarketSnapshot) -> None:
-        self._recent_closes.append(snapshot.spot)
-        if len(self._recent_closes) > 100:
-            del self._recent_closes[:-100]
-
-    def _ema(self, period: int) -> float:
-        values = self._recent_closes[-period:]
-        if not values:
-            return 0.0
-        alpha = 2.0 / (len(values) + 1.0)
-        ema = values[0]
-        for value in values[1:]:
-            ema = alpha * value + (1.0 - alpha) * ema
-        return ema
-
-    def _historical_volatility(self) -> float:
-        if len(self._recent_closes) < 6:
-            return 0.0
-        returns = [
-            log(curr / prev)
-            for prev, curr in zip(self._recent_closes[-31:-1], self._recent_closes[-30:])
-            if prev > 0.0 and curr > 0.0
-        ]
-        if len(returns) < 5:
-            return 0.0
-        mean = sum(returns) / len(returns)
-        variance = sum((value - mean) ** 2 for value in returns) / len(returns)
-        return sqrt(variance * 252 * (375 / max(self.config.bar_minutes, 1)))
-
-    def _trend(self):
-        if len(self._recent_closes) < 21:
-            return TrendDirection.SIDEWAYS
-        fast = self._ema(8)
-        slow = self._ema(21)
-        spread = (fast - slow) / slow if slow else 0.0
-        if spread > 0.0015:
-            return TrendDirection.BULLISH
-        if spread < -0.0015:
-            return TrendDirection.BEARISH
-        return TrendDirection.SIDEWAYS
-
-    def _trend_strength(self) -> float:
-        if len(self._recent_closes) < 21:
-            return 0.0
-        fast = self._ema(8)
-        slow = self._ema(21)
-        recent = self._recent_closes[-14:]
-        atr = sum(
-            abs(curr - prev) for prev, curr in zip(recent, recent[1:])
-        ) / max(len(recent) - 1, 1)
-        return min(abs(fast - slow) / atr * 10.0, 100.0) if atr else 0.0
 
     @staticmethod
     def _vol_regime(iv: float) -> VolatilityRegime:

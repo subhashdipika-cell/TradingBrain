@@ -36,6 +36,7 @@ class Order:
     limit_price: float | None = None
     right: OptionRight | None = None
     strike: float | None = None
+    expiry_bucket: str = "near"  # "near" or "far" (calendar strategies)
     tag: str = ""
 
     @property
@@ -75,3 +76,20 @@ class Broker(ABC):
         filled (e.g. the instrument is absent from the chain).
         """
         raise NotImplementedError
+
+    def submit_basket(
+        self, orders: list[Order], snapshot: MarketSnapshot
+    ) -> list[Fill]:
+        """
+        Execute a multi-leg basket. The caller orders the legs hedge-first
+        (BUY protective legs before SELL writes) so the broker blocks only the
+        reduced spread margin. The default implementation submits each leg in
+        the given order; live brokers may override to place a true basket /
+        preview combined margin first.
+        """
+        fills: list[Fill] = []
+        for order in orders:
+            fill = self.submit(order, snapshot)
+            if fill is not None:
+                fills.append(fill)
+        return fills

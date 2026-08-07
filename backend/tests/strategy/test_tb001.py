@@ -38,7 +38,7 @@ def test_tb001_initialize_enables():
     assert strategy.enabled is True
 
 
-def test_tb001_generates_short_straddle_entry(entry_context: MarketContext):
+def test_tb001_generates_hedged_iron_fly_entry(entry_context: MarketContext):
     strategy = TB001Strategy()
     strategy.initialize()
 
@@ -49,7 +49,30 @@ def test_tb001_generates_short_straddle_entry(entry_context: MarketContext):
     assert signal.signal_type is SignalType.SELL
     assert signal.side is OrderSide.SELL
     assert signal.position_side is PositionSide.SHORT
-    assert signal.reason == "Initial Short Straddle Entry"
+
+    # Default config hedges -> Iron Fly: buy 2 wings + sell 2 body legs.
+    meta = signal.metadata
+    assert meta["structure"] == "IRON_FLY"
+    legs = meta["legs"]
+    assert len(legs) == 4
+    buys = [leg for leg in legs if leg["side"] == "BUY"]
+    sells = [leg for leg in legs if leg["side"] == "SELL"]
+    assert len(buys) == 2 and len(sells) == 2  # 2 hedges, 2 writes
+    assert meta["wing_width"] is not None
+    assert meta["entry_credit"] > 0
+
+
+def test_tb001_naked_straddle_when_hedging_disabled(entry_context: MarketContext):
+    strategy = TB001Strategy()
+    strategy.configuration.hedge_enabled = False
+    strategy.initialize()
+
+    signal = strategy.generate_signal(entry_context)
+    assert signal is not None
+    meta = signal.metadata
+    assert meta["structure"] == "SHORT_STRADDLE"
+    assert len(meta["legs"]) == 2  # naked: just the two written legs
+    assert meta["wing_width"] is None
 
 
 def test_tb001_only_enters_once(entry_context: MarketContext):

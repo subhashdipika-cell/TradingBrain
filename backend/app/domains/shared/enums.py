@@ -121,6 +121,8 @@ class OptionStructure(str, Enum):
     # Defined-risk (hedged) premium-selling structures
     IRON_FLY = "IRON_FLY"  # short ATM straddle + long OTM wings
     IRON_CONDOR = "IRON_CONDOR"  # short OTM strangle + long further OTM wings
+    BULL_PUT_SPREAD = "BULL_PUT_SPREAD"  # sell OTM put + buy lower put (bullish credit)
+    BEAR_CALL_SPREAD = "BEAR_CALL_SPREAD"  # sell OTM call + buy higher call (bearish credit)
 
 
 class Broker(str, Enum):

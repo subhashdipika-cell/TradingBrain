@@ -30,7 +30,6 @@ from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.limits import RiskLimits
 from app.domains.risk.position_sizing import PositionSizer
 from app.domains.risk.risk_engine import RiskEngine
-from app.domains.strategy.tb001 import TB001Strategy
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,10 +41,37 @@ class BacktestConfig:
     start_spot: float = 25_000.0
     annual_vol: float = 0.13
     base_iv: float = 0.12
-    starting_capital: float = 1_000_000.0
+    starting_capital: float = 400_000.0
     slippage_pct: float = 0.0005
     include_costs: bool = True  # apply realistic NSE F&O transaction costs
     seed: int = 42
+    # "AUTO" = regime-based selection across all strategies; or a specific name
+    # (TB001..TB006) to isolate one strategy for testing.
+    strategy: str = "AUTO"
+
+
+def _resolve_actor(name: str):
+    """Return (strategy, selector, risk_limits, capital_allocation).
+
+    ``AUTO`` builds the structure-aware regime selector; a specific name builds
+    that single registered strategy."""
+    from app.domains.strategy.contracts.registry import StrategyRegistry
+    from app.domains.strategy.selector import default_selector, register_all_strategies
+
+    if (name or "AUTO").upper() == "AUTO":
+        return None, default_selector(), RiskLimits(max_daily_loss=0.03, max_drawdown=0.10), 0.25
+
+    register_all_strategies()
+    strat = StrategyRegistry.get(name)()
+    cfg = getattr(strat, "configuration", None)
+    return (
+        strat, None,
+        RiskLimits(
+            max_daily_loss=getattr(cfg, "max_daily_loss", 0.03),
+            max_drawdown=getattr(cfg, "max_strategy_drawdown", 0.10),
+        ),
+        getattr(cfg, "capital_allocation", 0.25),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,29 +102,22 @@ def run_backtest(config: BacktestConfig | None = None) -> BacktestResult:
         tick_size=spec.tick_size,
     )
     portfolio = Portfolio(starting_capital=cfg.starting_capital)
-    strategy = TB001Strategy()
-    risk_engine = RiskEngine(
-        RiskLimits(
-            max_daily_loss=strategy.configuration.max_daily_loss,
-            max_drawdown=strategy.configuration.max_strategy_drawdown,
-        )
-    )
+    actor, selector, risk_limits, alloc = _resolve_actor(cfg.strategy)
     engine = TradingEngine(
-        strategy=strategy,
+        strategy=actor,
+        selector=selector,
         feed=feed,
         broker=broker,
         portfolio=portfolio,
-        risk_engine=risk_engine,
+        risk_engine=RiskEngine(risk_limits),
         sizer=PositionSizer(),
-        config=EngineConfig(
-            bar_minutes=cfg.bar_minutes,
-            capital_allocation=strategy.configuration.capital_allocation,
-        ),
+        config=EngineConfig(bar_minutes=cfg.bar_minutes, capital_allocation=alloc),
     )
 
     journal = engine.run()
+    label = "AUTO (regime)" if (cfg.strategy or "AUTO").upper() == "AUTO" else cfg.strategy
     report = render_report(
-        journal, title=f"TB001 Backtest - {cfg.symbol} ({cfg.num_days} sessions)"
+        journal, title=f"{label} Backtest - {cfg.symbol} ({cfg.num_days} sessions)"
     )
     return BacktestResult(journal=journal, report=report)
 
@@ -107,10 +126,11 @@ def run_dhan_backtest(
     *,
     directory: str,
     symbol: str = "NIFTY50",
-    starting_capital: float = 1_000_000.0,
+    starting_capital: float = 400_000.0,
     slippage_pct: float = 0.0,
     include_costs: bool = True,
     bar_minutes: int = 1,
+    strategy: str = "AUTO",
 ) -> BacktestResult:
     """
     Backtest TB001 on REAL Dhan option-chain snapshots accumulated by AlphaEdge
@@ -125,26 +145,20 @@ def run_dhan_backtest(
     broker = PaperBroker(
         slippage_pct=slippage_pct, cost_model=cost_model, tick_size=spec.tick_size
     )
-    strategy = TB001Strategy()
+    actor, selector, risk_limits, alloc = _resolve_actor(strategy)
     engine = TradingEngine(
-        strategy=strategy,
+        strategy=actor,
+        selector=selector,
         feed=feed,
         broker=broker,
         portfolio=Portfolio(starting_capital=starting_capital),
-        risk_engine=RiskEngine(
-            RiskLimits(
-                max_daily_loss=strategy.configuration.max_daily_loss,
-                max_drawdown=strategy.configuration.max_strategy_drawdown,
-            )
-        ),
+        risk_engine=RiskEngine(risk_limits),
         sizer=PositionSizer(),
-        config=EngineConfig(
-            bar_minutes=bar_minutes,
-            capital_allocation=strategy.configuration.capital_allocation,
-        ),
+        config=EngineConfig(bar_minutes=bar_minutes, capital_allocation=alloc),
     )
     journal = engine.run()
-    report = render_report(journal, title=f"TB001 on real Dhan data - {symbol}")
+    label = "AUTO (regime)" if (strategy or "AUTO").upper() == "AUTO" else strategy
+    report = render_report(journal, title=f"{label} on real Dhan data - {symbol}")
     return BacktestResult(journal=journal, report=report)
 
 
@@ -153,7 +167,7 @@ def main() -> None:
     parser.add_argument("--symbol", default="NIFTY")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--bar-minutes", type=int, default=5)
-    parser.add_argument("--capital", type=float, default=1_000_000.0)
+    parser.add_argument("--capital", type=float, default=400_000.0)
     parser.add_argument("--spot", type=float, default=25_000.0)
     parser.add_argument("--iv", type=float, default=0.12)
     parser.add_argument("--seed", type=int, default=42)

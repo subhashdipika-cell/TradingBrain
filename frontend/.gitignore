@@ -4,6 +4,9 @@ dist-ssr
 *.local
 .env
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
