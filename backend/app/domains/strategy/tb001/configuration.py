@@ -60,6 +60,13 @@ class TB001Configuration:
     # ------------------------------------------------------------------
     shift_multiplier: float = constants.DEFAULT_SHIFT_MULTIPLIER
     min_premium: float = constants.DEFAULT_MIN_PREMIUM
+    min_body_premium_pct: float = constants.MIN_BODY_PREMIUM_PCT
+    min_credit_to_width: float = constants.MIN_CREDIT_TO_WIDTH
+    expiry_trading_enabled: bool = True
+    expiry_min_credit_to_width: float = constants.EXPIRY_MIN_CREDIT_TO_WIDTH
+    expiry_entry_cutoff: str = constants.EXPIRY_ENTRY_CUTOFF.isoformat()
+    expiry_square_off_time: str = constants.EXPIRY_SQUARE_OFF.isoformat()
+    expiry_position_risk: float = constants.EXPIRY_POSITION_RISK
     capital_allocation: float = constants.DEFAULT_INITIAL_CAPITAL
 
     # Hedging: trade a defined-risk Iron Fly (short ATM straddle + long OTM
@@ -70,7 +77,7 @@ class TB001Configuration:
 
     # Exit rules (fractions of the entry net credit)
     target_profit_pct: float = 0.30  # buy back when credit decays 30%
-    stop_loss_pct: float = 0.50  # exit when cost to close expands 50%
+    stop_loss_pct: float = 0.30  # exit when cost to close expands 30%
     square_off_time: str = "15:15:00"  # force-close before the close
 
     # ------------------------------------------------------------------
@@ -133,6 +140,8 @@ class TB001Configuration:
             "entry_time": self.entry_time,
             "no_new_entry_after": self.no_new_entry_after,
             "square_off_time": self.square_off_time,
+            "expiry_entry_cutoff": self.expiry_entry_cutoff,
+            "expiry_square_off_time": self.expiry_square_off_time,
         }
 
         parsed: dict[str, time] = {}
@@ -165,6 +174,11 @@ class TB001Configuration:
                 "no_new_entry_after must be between entry_time and " "market_close."
             )
 
+        if parsed["expiry_entry_cutoff"] > parsed["expiry_square_off_time"]:
+            raise StrategyConfigurationError(
+                "expiry_entry_cutoff must be before expiry_square_off_time."
+            )
+
     def _validate_fractions(self) -> None:
         fractions = {
             "max_strategy_drawdown": self.max_strategy_drawdown,
@@ -176,6 +190,10 @@ class TB001Configuration:
             "default_score": self.default_score,
             "target_profit_pct": self.target_profit_pct,
             "stop_loss_pct": self.stop_loss_pct,
+            "min_body_premium_pct": self.min_body_premium_pct,
+            "min_credit_to_width": self.min_credit_to_width,
+            "expiry_min_credit_to_width": self.expiry_min_credit_to_width,
+            "expiry_position_risk": self.expiry_position_risk,
         }
 
         for name, value in fractions.items():
@@ -190,6 +208,19 @@ class TB001Configuration:
 
         if self.min_premium <= 0.0:
             raise StrategyConfigurationError("min_premium must be positive.")
+
+        if self.min_body_premium_pct <= 0.0:
+            raise StrategyConfigurationError(
+                "min_body_premium_pct must be positive."
+            )
+        if self.min_credit_to_width <= 0.0:
+            raise StrategyConfigurationError(
+                "min_credit_to_width must be positive."
+            )
+        if self.expiry_min_credit_to_width <= 0.0:
+            raise StrategyConfigurationError(
+                "expiry_min_credit_to_width must be positive."
+            )
 
         if self.hedge_enabled and self.hedge_wing_strikes <= 0:
             raise StrategyConfigurationError(

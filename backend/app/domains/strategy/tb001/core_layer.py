@@ -85,8 +85,11 @@ class CoreLayer:
         call_quote, put_quote = straddle
         body_premium = call_quote.price + put_quote.price
 
-        # Only sell when the ATM body has enough premium to harvest.
-        if body_premium < self.config.min_premium:
+        minimum_body_premium = max(
+            self.config.min_premium,
+            context.last_price * self.config.min_body_premium_pct,
+        )
+        if body_premium < minimum_body_premium:
             return None
 
         plan = self._build_structure(chain, strike)
@@ -97,7 +100,18 @@ class CoreLayer:
         if entry_credit <= 0:
             return None
 
+        if wing_width is not None:
+            required_ratio = (
+                self.config.expiry_min_credit_to_width
+                if context.is_expiry
+                else self.config.min_credit_to_width
+            )
+            if entry_credit / wing_width < required_ratio:
+                return None
+
         self._position_open = True
+
+        expiry_mode = context.is_expiry
 
         return Signal(
             strategy="TB001",
@@ -105,7 +119,11 @@ class CoreLayer:
             signal_type=SignalType.SELL,
             side=OrderSide.SELL,
             position_side=PositionSide.SHORT,
-            requested_risk=self.config.max_position_risk,
+            requested_risk=(
+                self.config.expiry_position_risk
+                if expiry_mode
+                else self.config.max_position_risk
+            ),
             confidence=0.80,
             score=entry_credit,
             reason=f"{structure.value} entry @ {strike:.0f}",
@@ -116,8 +134,17 @@ class CoreLayer:
                 "entry_credit": entry_credit,
                 "wing_width": wing_width,  # None when naked
                 "target_profit_pct": self.config.target_profit_pct,
-                "stop_loss_pct": self.config.stop_loss_pct,
-                "square_off_time": self.config.square_off_time,
+                "stop_loss_pct": (
+                    min(self.config.stop_loss_pct, 0.25)
+                    if expiry_mode
+                    else self.config.stop_loss_pct
+                ),
+                "square_off_time": (
+                    self.config.expiry_square_off_time
+                    if expiry_mode
+                    else self.config.square_off_time
+                ),
+                "expiry_mode": expiry_mode,
             },
         )
 
@@ -204,14 +231,21 @@ class CoreLayer:
         if current_time < entry_time:
             return False
 
-        # No fresh entries late in the session.
-        if current_time >= time.fromisoformat(self.config.no_new_entry_after):
+        if context.is_expiry:
+            if not self.config.expiry_trading_enabled:
+                return False
+            if current_time >= time.fromisoformat(self.config.expiry_entry_cutoff):
+                return False
+        elif current_time >= time.fromisoformat(self.config.no_new_entry_after):
             return False
 
         if context.market_regime == MarketRegime.UNKNOWN:
             return False
 
-        if context.volatility_regime == VolatilityRegime.EXTREME:
+        if context.volatility_regime in (
+            VolatilityRegime.LOW,
+            VolatilityRegime.EXTREME,
+        ):
             return False
 
         return True

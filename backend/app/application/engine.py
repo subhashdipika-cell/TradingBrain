@@ -328,12 +328,47 @@ class TradingEngine:
         ]
         fills = self.broker.submit_basket(orders, snapshot)
         entry_commission = 0.0
+        actual_entry_credit = 0.0
         for fill in fills:
             self._book_fill(fill, fill.order.right, fill.order.strike)
             entry_commission += fill.commission
+            actual_entry_credit += (
+                -fill.quantity * fill.price / sizing.units
+            )
+
+        # A multi-leg option structure must be all-or-nothing. Roll back any
+        # partial basket so a missing hedge or short leg cannot become a
+        # phantom open trade or leave unbounded exposure.
+        if len(fills) != len(orders):
+            for fill in reversed(fills):
+                rollback = self.broker.submit(
+                    Order(
+                        symbol=fill.order.symbol,
+                        instrument=fill.order.instrument,
+                        quantity=-fill.quantity,
+                        right=fill.order.right,
+                        strike=fill.order.strike,
+                        expiry_bucket=fill.order.expiry_bucket,
+                        tag=f"{strategy.name}_ENTRY_ROLLBACK",
+                    ),
+                    snapshot,
+                )
+                if rollback is not None:
+                    self._book_fill(
+                        rollback, rollback.order.right, rollback.order.strike
+                    )
+            strategy.reset()
+            self.journal.record_event(
+                snapshot.timestamp, "Entry cancelled: incomplete multi-leg fill"
+            )
+            return
+
+        if actual_entry_credit <= 0.0:
+            strategy.reset()
+            return
 
         target_pct = float(meta.get("target_profit_pct", 0.30))
-        stop_pct = float(meta.get("stop_loss_pct", 0.50))
+        stop_pct = float(meta.get("stop_loss_pct", 0.30))
         square_off = time.fromisoformat(str(meta.get("square_off_time", "15:15:00")))
 
         self._open_trade = _OpenTrade(
@@ -343,9 +378,9 @@ class TradingEngine:
             lots=sizing.lots,
             units=sizing.units,
             entry_time=snapshot.timestamp,
-            entry_credit=entry_credit,
-            target_credit=entry_credit * (1.0 - target_pct),
-            stop_credit=entry_credit * (1.0 + stop_pct),
+            entry_credit=actual_entry_credit,
+            target_credit=actual_entry_credit * (1.0 - target_pct),
+            stop_credit=actual_entry_credit * (1.0 + stop_pct),
             square_off=square_off,
             realized_start=realized_start,
             entry_commission=entry_commission,
@@ -358,7 +393,7 @@ class TradingEngine:
         self.journal.record_event(
             snapshot.timestamp,
             f"ENTER {self._open_trade.structure} {spec.symbol} "
-            f"{body_strike:.0f} x{sizing.lots} credit {entry_credit:.2f}"
+            f"{body_strike:.0f} x{sizing.lots} credit {actual_entry_credit:.2f}"
             + (f" (margin/lot Rs {margin_per_lot:,.0f})" if wing_width else ""),
         )
 
