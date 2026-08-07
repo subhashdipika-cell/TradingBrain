@@ -1,15 +1,12 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """
     Central application configuration.
-
-    Values are loaded from the .env file when present and fall back
-    to the defaults defined here.
     """
 
     # ------------------------------------------------------------------
@@ -36,6 +33,34 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+
+    DATABASE_HOST: str = "localhost"
+    DATABASE_PORT: int = 5432
+    DATABASE_NAME: str = "tradingbrain"
+    DATABASE_USER: str = "postgres"
+    DATABASE_PASSWORD: str = "postgres"
+    DATABASE_ECHO: bool = False
+
+    @computed_field
+    @property
+    def DATABASE_URL(self) -> str:
+        return (
+            f"postgresql+asyncpg://"
+            f"{self.DATABASE_USER}:{self.DATABASE_PASSWORD}"
+            f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}"
+            f"/{self.DATABASE_NAME}"
+        )
+
+    # ------------------------------------------------------------------
+    # Broker - Dhan (live data + execution)
+    # ------------------------------------------------------------------
+
+    DHAN_CLIENT_ID: str = ""
+    DHAN_ACCESS_TOKEN: str = ""
+
+    # ------------------------------------------------------------------
     # CORS
     # ------------------------------------------------------------------
 
@@ -49,7 +74,7 @@ class Settings(BaseSettings):
     CORS_ALLOW_HEADERS: list[str] = ["*"]
 
     # ------------------------------------------------------------------
-    # Pydantic Settings
+    # Settings
     # ------------------------------------------------------------------
 
     model_config = SettingsConfigDict(
@@ -62,9 +87,6 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """
-    Return a cached Settings instance.
-    """
     return Settings()
 
 

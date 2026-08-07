@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.backtest import router as backtest_router
+from app.api.database import router as database_router
 from app.api.health import router as health_router
 from app.core.config import settings
 from app.core.exceptions import TradingBrainException
@@ -12,7 +14,15 @@ tags_metadata = [
     {
         "name": "Health",
         "description": "System health and monitoring endpoints.",
-    }
+    },
+    {
+        "name": "Database",
+        "description": "Database connectivity endpoints.",
+    },
+    {
+        "name": "Backtest",
+        "description": "Run TB001 backtests and retrieve performance metrics.",
+    },
 ]
 
 app = FastAPI(
@@ -64,6 +74,16 @@ app.add_exception_handler(
 
 app.include_router(
     health_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    database_router,
+    prefix=settings.API_V1_PREFIX,
+)
+
+app.include_router(
+    backtest_router,
     prefix=settings.API_V1_PREFIX,
 )
 
