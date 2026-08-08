@@ -30,6 +30,13 @@ class OptionQuote:
     right: OptionRight
     greeks: OptionGreeks
     underlying: float
+    # Microstructure fields are optional for synthetic/backtest chains. Live
+    # Dhan quotes populate them and strategies can enforce liquidity gates.
+    bid: float = 0.0
+    ask: float = 0.0
+    open_interest: float = 0.0
+    volume: float = 0.0
+    quote_timestamp: datetime | None = None
 
     @property
     def price(self) -> float:
@@ -38,6 +45,40 @@ class OptionQuote:
     @property
     def tradingsymbol(self) -> str:
         return f"{self.symbol}{self.strike:.0f}{self.right.value[0]}E"
+
+    @property
+    def has_market_data(self) -> bool:
+        return self.bid > 0.0 and self.ask >= self.bid
+
+    def liquidity_check(
+        self,
+        *,
+        now: datetime,
+        max_spread_pct: float = 0.08,
+        min_open_interest: float = 100_000.0,
+        min_volume: float = 1_000.0,
+        max_quote_age_seconds: float = 5.0,
+        require_microstructure: bool = True,
+    ) -> tuple[bool, str]:
+        """Validate live tradability without rejecting synthetic quotes."""
+        if not self.has_market_data:
+            return (
+                (False, "missing bid/ask")
+                if require_microstructure
+                else (True, "microstructure unavailable")
+            )
+        mid = (self.bid + self.ask) / 2.0
+        if mid <= 0.0 or (self.ask - self.bid) / mid > max_spread_pct:
+            return False, "bid-ask spread too wide"
+        if self.open_interest < min_open_interest:
+            return False, "open interest too low"
+        if self.volume < min_volume:
+            return False, "volume too low"
+        if self.quote_timestamp is not None:
+            age = (now - self.quote_timestamp).total_seconds()
+            if age < -1.0 or age > max_quote_age_seconds:
+                return False, "quote stale"
+        return True, "liquid"
 
 
 @dataclass(slots=True)

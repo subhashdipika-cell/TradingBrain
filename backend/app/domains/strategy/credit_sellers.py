@@ -11,8 +11,8 @@ selected by market structure:
     TB005 Bull Put Spread  - sell OTM put + buy lower put (bullish credit)
     TB006 Bear Call Spread - sell OTM call + buy higher call (bearish credit)
 
-Strikes are chosen ``short_otm`` steps out of the money; hedges (condor/spreads)
-``wing_otm`` steps beyond the short leg. All are option SELLING - net credit.
+    Strikes are selected by target delta; hedges are selected farther OTM by a
+    lower target delta. All are option SELLING - net credit.
 
 Author: TradingBrain
 """
@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from app.domains.market.option_chain import OptionChain
+from app.domains.market.option_chain import OptionChain, OptionQuote
 from app.domains.shared.enums import (
     OptionRight,
     OptionStructure,
@@ -44,15 +44,45 @@ class CreditSellConfig:
     target_profit_pct: float = 0.50        # exit at 50% of the credit captured
     stop_loss_pct: float = 0.50            # stop when the credit grows 50%
     square_off_time: str = "15:15:00"
-    short_otm: int = 2                     # strikes OTM for the short leg(s)
-    wing_otm: int = 2                      # extra strikes OTM for the hedge leg(s)
+    short_delta: float = 0.18              # target absolute delta for shorts
+    hedge_delta: float = 0.08              # target absolute delta for hedges
+    min_credit_to_width: float = 0.20
+    max_spread_pct: float = 0.08
+    min_open_interest: float = 100_000.0
+    min_volume: float = 1_000.0
     entry_after_min: int = 15              # wait this long after the open
     min_minutes_left: int = 30             # don't open too close to the square-off
 
 
-def _price(chain: OptionChain, strike: float, right: OptionRight) -> float | None:
-    q = chain.get(strike, right)
-    return q.price if q is not None else None
+def _select_delta(
+    chain: OptionChain,
+    right: OptionRight,
+    target_delta: float,
+    *,
+    direction: str | None = None,
+    reference_strike: float | None = None,
+) -> OptionQuote | None:
+    """Select the closest valid delta, optionally on one side of a short."""
+    candidates = []
+    for (strike, quote_right), quote in chain.quotes.items():
+        if quote_right is not right or quote.price <= 0:
+            continue
+        if (
+            direction == "higher"
+            and reference_strike is not None
+            and strike <= reference_strike
+        ):
+            continue
+        if (
+            direction == "lower"
+            and reference_strike is not None
+            and strike >= reference_strike
+        ):
+            continue
+        candidates.append(quote)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda q: abs(abs(q.greeks.delta) - target_delta))
 
 
 class CreditSellStrategy(BaseStrategy):
@@ -110,6 +140,26 @@ class CreditSellStrategy(BaseStrategy):
         if credit <= 0:
             return None
 
+        strict_liquidity = bool(context.metadata.get("live_chain"))
+        for leg in legs:
+            quote = chain.get(float(leg["strike"]), OptionRight(leg["right"]))
+            if quote is None:
+                return None
+            liquid, reason = quote.liquidity_check(
+                now=context.timestamp,
+                max_spread_pct=cfg.max_spread_pct,
+                min_open_interest=cfg.min_open_interest,
+                min_volume=cfg.min_volume,
+                require_microstructure=strict_liquidity,
+            )
+            if not liquid:
+                context.metadata["entry_rejection"] = f"liquidity: {reason}"
+                return None
+
+        if wing is not None and credit / wing < cfg.min_credit_to_width:
+            context.metadata["entry_rejection"] = "credit-to-width below threshold"
+            return None
+
         self._last_entry_date = day
         return Signal(
             strategy=self.name,
@@ -160,17 +210,15 @@ class ShortStrangleStrategy(CreditSellStrategy):
     structure = OptionStructure.SHORT_STRANGLE
 
     def _make_config(self) -> CreditSellConfig:
-        return CreditSellConfig(short_otm=3)
+        return CreditSellConfig(short_delta=0.18)
 
     def _legs(self, chain, complete, idx):
-        n = self.configuration.short_otm
-        ci, pi = idx + n, idx - n
-        if ci >= len(complete) or pi < 0:
+        scq = _select_delta(chain, OptionRight.CALL, self.configuration.short_delta)
+        spq = _select_delta(chain, OptionRight.PUT, self.configuration.short_delta)
+        if scq is None or spq is None:
             return None
-        sc, sp = complete[ci], complete[pi]
-        cp, pp = _price(chain, sc, OptionRight.CALL), _price(chain, sp, OptionRight.PUT)
-        if cp is None or pp is None:
-            return None
+        sc, sp = scq.strike, spq.strike
+        cp, pp = scq.price, spq.price
         legs = [
             {"right": "CALL", "strike": sc, "side": "SELL"},
             {"right": "PUT", "strike": sp, "side": "SELL"},
@@ -186,17 +234,28 @@ class IronCondorStrategy(CreditSellStrategy):
     structure = OptionStructure.IRON_CONDOR
 
     def _legs(self, chain, complete, idx):
-        n, w = self.configuration.short_otm, self.configuration.wing_otm
-        ci, pi, lci, lpi = idx + n, idx - n, idx + n + w, idx - n - w
-        if lci >= len(complete) or lpi < 0:
+        scq = _select_delta(chain, OptionRight.CALL, self.configuration.short_delta)
+        spq = _select_delta(chain, OptionRight.PUT, self.configuration.short_delta)
+        if scq is None or spq is None:
             return None
-        sc, sp, lc, lp = complete[ci], complete[pi], complete[lci], complete[lpi]
-        scp = _price(chain, sc, OptionRight.CALL)
-        spp = _price(chain, sp, OptionRight.PUT)
-        lcp = _price(chain, lc, OptionRight.CALL)
-        lpp = _price(chain, lp, OptionRight.PUT)
-        if None in (scp, spp, lcp, lpp):
+        lcq = _select_delta(
+            chain,
+            OptionRight.CALL,
+            self.configuration.hedge_delta,
+            direction="higher",
+            reference_strike=scq.strike,
+        )
+        lpq = _select_delta(
+            chain,
+            OptionRight.PUT,
+            self.configuration.hedge_delta,
+            direction="lower",
+            reference_strike=spq.strike,
+        )
+        if lcq is None or lpq is None:
             return None
+        sc, sp, lc, lp = scq.strike, spq.strike, lcq.strike, lpq.strike
+        scp, spp, lcp, lpp = scq.price, spq.price, lcq.price, lpq.price
         credit = (scp + spp) - (lcp + lpp)
         wing = max(lc - sc, sp - lp)
         legs = [
@@ -216,14 +275,20 @@ class BullPutSpreadStrategy(CreditSellStrategy):
     structure = OptionStructure.BULL_PUT_SPREAD
 
     def _legs(self, chain, complete, idx):
-        n, w = self.configuration.short_otm, self.configuration.wing_otm
-        si, li = idx - n, idx - n - w
-        if li < 0:
+        ssq = _select_delta(chain, OptionRight.PUT, self.configuration.short_delta)
+        if ssq is None:
             return None
-        ss, ls = complete[si], complete[li]
-        ssp, lsp = _price(chain, ss, OptionRight.PUT), _price(chain, ls, OptionRight.PUT)
-        if ssp is None or lsp is None:
+        lsq = _select_delta(
+            chain,
+            OptionRight.PUT,
+            self.configuration.hedge_delta,
+            direction="lower",
+            reference_strike=ssq.strike,
+        )
+        if lsq is None:
             return None
+        ss, ls = ssq.strike, lsq.strike
+        ssp, lsp = ssq.price, lsq.price
         legs = [
             {"right": "PUT", "strike": ls, "side": "BUY"},    # hedge (lower)
             {"right": "PUT", "strike": ss, "side": "SELL"},   # write
@@ -239,14 +304,20 @@ class BearCallSpreadStrategy(CreditSellStrategy):
     structure = OptionStructure.BEAR_CALL_SPREAD
 
     def _legs(self, chain, complete, idx):
-        n, w = self.configuration.short_otm, self.configuration.wing_otm
-        si, li = idx + n, idx + n + w
-        if li >= len(complete):
+        ssq = _select_delta(chain, OptionRight.CALL, self.configuration.short_delta)
+        if ssq is None:
             return None
-        ss, ls = complete[si], complete[li]
-        ssp, lsp = _price(chain, ss, OptionRight.CALL), _price(chain, ls, OptionRight.CALL)
-        if ssp is None or lsp is None:
+        lsq = _select_delta(
+            chain,
+            OptionRight.CALL,
+            self.configuration.hedge_delta,
+            direction="higher",
+            reference_strike=ssq.strike,
+        )
+        if lsq is None:
             return None
+        ss, ls = ssq.strike, lsq.strike
+        ssp, lsp = ssq.price, lsq.price
         legs = [
             {"right": "CALL", "strike": ls, "side": "BUY"},   # hedge (higher)
             {"right": "CALL", "strike": ss, "side": "SELL"},  # write

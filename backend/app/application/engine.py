@@ -808,6 +808,9 @@ class TradingEngine:
             minutes_to_close=self.session.minutes_to_close(ts),
         )
         context.metadata["option_chain"] = snapshot.option_chain
+        context.metadata["live_chain"] = any(
+            quote.has_market_data for quote in snapshot.option_chain.quotes.values()
+        )
         context.metadata["strike_step"] = spec.strike_step
         context.metadata["lot_size"] = spec.lot_size
         if snapshot.far_chain is not None:

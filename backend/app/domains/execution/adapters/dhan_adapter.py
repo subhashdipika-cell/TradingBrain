@@ -205,10 +205,26 @@ class DhanFeed(DataFeed):
                         right=right,
                         greeks=self._greeks(leg, right, float(sk), under_ltp, tte, iv),
                         underlying=under_ltp,
+                        bid=self._leg_float(leg, "bid_price", "top_bid_price", "bid"),
+                        ask=self._leg_float(leg, "ask_price", "top_ask_price", "ask"),
+                        open_interest=self._leg_float(leg, "oi", "open_interest"),
+                        volume=self._leg_float(leg, "volume", "total_volume"),
+                        quote_timestamp=now,
                     )
                 )
         atm_iv = (sum(atm_ivs) / len(atm_ivs)) if atm_ivs else 0.0
         return chain, atm_iv, tte, expiry_date, under_ltp
+
+    @staticmethod
+    def _leg_float(leg: dict, *keys: str) -> float:
+        for key in keys:
+            value = leg.get(key)
+            if value not in (None, ""):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
 
     def _get_vix(self, client) -> float:
         """Throttled India VIX read (last 1-min close). 0.0 on failure."""
