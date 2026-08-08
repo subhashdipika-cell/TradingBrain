@@ -408,6 +408,70 @@ th {
   color: var(--text);
 }
 
+.time-window-card {
+  overflow: hidden;
+}
+
+.window-policy {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 14px 0 18px;
+  padding: 10px 12px;
+}
+
+.window-symbol {
+  border-top: 1px solid var(--border);
+  margin-top: 18px;
+  padding-top: 16px;
+}
+
+.window-symbol-header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.window-symbol-header h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.window-status {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.window-status.approved {
+  background: color-mix(in srgb, var(--pos) 14%, transparent);
+  border-color: var(--pos);
+  color: var(--pos);
+}
+
+.window-status.pending {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.window-reason {
+  color: var(--muted);
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: 260px;
+}
+
 details summary {
   cursor: pointer;
   font-weight: 600;

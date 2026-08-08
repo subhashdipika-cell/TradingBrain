@@ -179,6 +179,31 @@ export interface ExportResult {
   runs: number;
 }
 
+export interface TimeWindowPromotionPolicy {
+  min_trades: number;
+  min_sessions: number;
+  min_expectancy: number;
+  min_profit_factor: number;
+  min_win_rate: number;
+}
+
+export interface TimeWindowDecision {
+  symbol: string;
+  bucket: string;
+  approved: boolean;
+  trades: number;
+  sessions: number;
+  expectancy: number;
+  profit_factor: number;
+  win_rate: number;
+  reasons: string[];
+}
+
+export interface TimeWindowReport {
+  promotion_policy: TimeWindowPromotionPolicy;
+  symbols: Record<string, TimeWindowDecision[]>;
+}
+
 // ── Instrument lot sizes ──────────────────────────────────────────────────────
 export interface LotSizes {
   lots: Record<string, number>;

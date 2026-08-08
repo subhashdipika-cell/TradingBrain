@@ -11,6 +11,7 @@ import type {
   LotSizesRefresh,
   ResultRecord,
   ResultSummary,
+  TimeWindowReport,
 } from "./types";
 
 const BASE_URL =
@@ -92,6 +93,12 @@ export const api = {
     return request<ExportResult>(
       `/reports/monthly/export${month ? `?month=${month}` : ""}`,
       { method: "POST" },
+    );
+  },
+
+  timeWindowReport(symbol?: string): Promise<TimeWindowReport> {
+    return request<TimeWindowReport>(
+      `/reports/time-windows${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`,
     );
   },
 

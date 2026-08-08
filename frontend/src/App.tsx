@@ -10,6 +10,7 @@ import { ForwardTestPanel } from "./components/ForwardTestPanel";
 import { HealthBadge } from "./components/HealthBadge";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryCards } from "./components/SummaryCards";
+import { TimeWindowReport } from "./components/TimeWindowReport";
 import { TradesTable } from "./components/TradesTable";
 
 type Tab = "run" | "analysis" | "reports" | "settings";
@@ -119,6 +120,7 @@ export default function App() {
       {tab === "reports" && (
         <main>
           <DailyReport />
+          <TimeWindowReport />
         </main>
       )}
 
