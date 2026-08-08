@@ -110,6 +110,10 @@ class DhanFeed(DataFeed):
         self._vix_value = 0.0
         self._vix_fetched_at = 0.0
         self._client = None
+        self._bar_minute = None
+        self._bar_open = 0.0
+        self._bar_high = 0.0
+        self._bar_low = 0.0
 
     @property
     def spec(self) -> InstrumentSpec:
@@ -245,11 +249,20 @@ class DhanFeed(DataFeed):
                 far_chain, _, far_tte, far_expiry, _ = far_built
 
         now = datetime.now(_IST).replace(tzinfo=None)
+        bar_minute = now.replace(second=0, microsecond=0)
+        if self._bar_minute != bar_minute:
+            self._bar_minute = bar_minute
+            self._bar_open = under_ltp
+            self._bar_high = under_ltp
+            self._bar_low = under_ltp
+        else:
+            self._bar_high = max(self._bar_high, under_ltp)
+            self._bar_low = min(self._bar_low, under_ltp)
         candle = Candle(
-            timestamp=now,
-            open=under_ltp,
-            high=under_ltp,
-            low=under_ltp,
+            timestamp=bar_minute,
+            open=self._bar_open,
+            high=self._bar_high,
+            low=self._bar_low,
             close=under_ltp,
         )
         return MarketSnapshot(
@@ -493,7 +506,7 @@ class DhanCandleFeed:
         return self._client
 
     def fetch_intraday(self, *, interval: int, days: int = 5) -> list[Candle]:
-        """Fetch ``interval``-minute candles for the last ``days`` days."""
+        """Fetch completed ``interval``-minute candles for the last ``days`` days."""
         client = self._ensure_client()
         now = datetime.now(_IST)
         resp = client.intraday_minute_data(
@@ -504,4 +517,10 @@ class DhanCandleFeed:
             to_date=now.strftime("%Y-%m-%d"),
             interval=interval,
         )
-        return candles_from_response(resp)
+        candles = candles_from_response(resp)
+        cutoff = now.replace(second=0, microsecond=0)
+        return [
+            candle
+            for candle in candles
+            if candle.timestamp + timedelta(minutes=interval) <= cutoff
+        ]

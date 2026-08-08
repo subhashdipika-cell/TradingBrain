@@ -814,7 +814,15 @@ class TradingEngine:
             context.metadata["option_chain_far"] = snapshot.far_chain
 
         # ── Market structure from indicators (drives regime + strategy routing) ──
-        self._recent_candles.append(snapshot.candle)
+        if (
+            not self._recent_candles
+            or snapshot.candle.timestamp > self._recent_candles[-1].timestamp
+        ):
+            self._recent_candles.append(snapshot.candle)
+        else:
+            # Dhan polls several times inside one minute; replace the forming
+            # bar instead of counting every poll as a separate candle.
+            self._recent_candles[-1] = snapshot.candle
         if len(self._recent_candles) > 250:
             self._recent_candles = self._recent_candles[-250:]
         struct = analyse(self._recent_candles, iv=snapshot.implied_vol)
