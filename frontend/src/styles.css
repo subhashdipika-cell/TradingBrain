@@ -472,6 +472,85 @@ th {
   max-width: 260px;
 }
 
+.window-chart-wrap {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 12px 0 14px;
+  overflow-x: auto;
+  padding: 10px 12px 4px;
+}
+
+.window-chart-legend {
+  color: var(--muted);
+  display: flex;
+  font-size: 11px;
+  gap: 16px;
+  margin: 0 0 2px 46px;
+}
+
+.window-chart-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.legend-swatch {
+  border-radius: 2px;
+  display: inline-block;
+  height: 8px;
+  width: 8px;
+}
+
+.pnl-swatch {
+  background: var(--accent);
+}
+
+.expectancy-swatch {
+  background: var(--muted);
+}
+
+.window-chart {
+  display: block;
+  min-width: 540px;
+  width: 100%;
+}
+
+.window-chart-zero {
+  stroke: var(--border);
+  stroke-dasharray: 4 4;
+}
+
+.window-chart-axis,
+.window-chart-label,
+.window-chart-expectancy {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.window-chart-value {
+  fill: var(--text);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.window-chart-expectancy {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.window-bar {
+  fill: var(--accent);
+}
+
+.window-bar.positive {
+  fill: var(--pos);
+}
+
+.window-bar.negative {
+  fill: var(--neg);
+}
+
 details summary {
   cursor: pointer;
   font-weight: 600;

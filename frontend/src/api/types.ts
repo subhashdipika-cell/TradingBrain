@@ -193,6 +193,7 @@ export interface TimeWindowDecision {
   approved: boolean;
   trades: number;
   sessions: number;
+  net_pnl: number;
   expectancy: number;
   profit_factor: number;
   win_rate: number;

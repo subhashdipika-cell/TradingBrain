@@ -31,6 +31,7 @@ class PromotionDecision:
     approved: bool
     trades: int
     sessions: int
+    net_pnl: float
     expectancy: float
     profit_factor: float
     win_rate: float
@@ -118,7 +119,7 @@ class TimeWindowTracker:
             reasons.append(f"win rate {win_rate:.1%} < {self.config.min_win_rate:.1%}")
         return PromotionDecision(
             symbol=symbol.upper(), bucket=bucket, approved=not reasons,
-            trades=trades, sessions=sessions, expectancy=expectancy,
+            trades=trades, sessions=sessions, net_pnl=net_pnl, expectancy=expectancy,
             profit_factor=profit_factor, win_rate=win_rate,
             reasons=tuple(reasons),
         )
@@ -139,6 +140,7 @@ class TimeWindowTracker:
                 "approved": decision.approved,
                 "trades": decision.trades,
                 "sessions": decision.sessions,
+                "net_pnl": decision.net_pnl,
                 "expectancy": decision.expectancy,
                 "profit_factor": decision.profit_factor,
                 "win_rate": decision.win_rate,

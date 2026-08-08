@@ -7,6 +7,55 @@ function profitFactor(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "∞";
 }
 
+function WindowChart({ decisions }: { decisions: TimeWindowDecision[] }) {
+  const width = 720;
+  const height = 220;
+  const left = 46;
+  const right = 18;
+  const top = 18;
+  const bottom = 48;
+  const baseline = 130;
+  const plotHeight = 92;
+  const maxAbs = Math.max(1, ...decisions.map((d) => Math.abs(d.net_pnl)));
+  const slot = (width - left - right) / decisions.length;
+  const barWidth = Math.max(18, Math.min(64, slot - 12));
+
+  return (
+    <div className="window-chart-wrap">
+      <div className="window-chart-legend">
+        <span><i className="legend-swatch pnl-swatch" />Net P&amp;L</span>
+        <span><i className="legend-swatch expectancy-swatch" />Expectancy label</span>
+      </div>
+      <svg className="window-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Net P&L and expectancy by entry window">
+        <line x1={left} x2={width - right} y1={baseline} y2={baseline} className="window-chart-zero" />
+        <text x={left - 8} y={top + 4} textAnchor="end" className="window-chart-axis">+{formatINR(maxAbs)}</text>
+        <text x={left - 8} y={baseline + 4} textAnchor="end" className="window-chart-axis">₹0</text>
+        <text x={left - 8} y={baseline + plotHeight + 4} textAnchor="end" className="window-chart-axis">-{formatINR(maxAbs)}</text>
+        {decisions.map((decision, index) => {
+          const x = left + slot * index + (slot - barWidth) / 2;
+          const barHeight = Math.max(2, (Math.abs(decision.net_pnl) / maxAbs) * plotHeight);
+          const y = decision.net_pnl >= 0 ? baseline - barHeight : baseline;
+          return (
+            <g key={decision.bucket}>
+              <title>{`${decision.bucket}: ${formatINR(decision.net_pnl)} net, ${formatINR(decision.expectancy)} expectancy`}</title>
+              <rect x={x} y={y} width={barWidth} height={barHeight} rx="4" className={`window-bar ${decision.net_pnl >= 0 ? "positive" : "negative"}`} />
+              <text x={x + barWidth / 2} y={decision.net_pnl >= 0 ? y - 6 : y + barHeight + 14} textAnchor="middle" className="window-chart-value">
+                {formatINR(decision.net_pnl)}
+              </text>
+              <text x={x + barWidth / 2} y={height - bottom + 16} textAnchor="middle" className="window-chart-label">
+                {decision.bucket.slice(0, 5)}
+              </text>
+              <text x={x + barWidth / 2} y={height - bottom + 31} textAnchor="middle" className="window-chart-expectancy">
+                E {formatINR(decision.expectancy)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
+  );
+}
+
 function DecisionRow({ decision }: { decision: TimeWindowDecision }) {
   return (
     <tr>
@@ -94,7 +143,9 @@ export function TimeWindowReport() {
           {decisions.length === 0 ? (
             <p className="hint">No entry-window observations yet.</p>
           ) : (
-            <div className="table-scroll">
+            <>
+              <WindowChart decisions={decisions} />
+              <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
@@ -114,7 +165,8 @@ export function TimeWindowReport() {
                   ))}
                 </tbody>
               </table>
-            </div>
+              </div>
+            </>
           )}
         </div>
       ))}
