@@ -21,6 +21,7 @@ from typing import Any
 
 from app.domains.analytics.journal import TradeJournal
 from app.domains.analytics.reports import build_summary
+from app.domains.analytics.time_window import TimeWindowTracker
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,9 @@ class ResultsStore:
     def __init__(self, directory: str) -> None:
         self._dir = directory
         os.makedirs(self._dir, exist_ok=True)
+        self.time_window_tracker = TimeWindowTracker(
+            os.path.join(self._dir, "time_window_stats.json")
+        )
 
     # ------------------------------------------------------------------
     def save(
@@ -88,6 +92,8 @@ class ResultsStore:
         }
         with open(self._path(run_id), "w", encoding="utf-8") as fh:
             json.dump(record, fh, indent=2)
+        if run_type == "forward-test":
+            self.time_window_tracker.ingest_journal(run_id, journal)
         return self._to_summary(record)
 
     def list(self) -> list[ResultSummary]:

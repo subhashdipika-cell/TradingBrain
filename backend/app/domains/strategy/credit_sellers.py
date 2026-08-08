@@ -125,6 +125,13 @@ class CreditSellStrategy(BaseStrategy):
         if self._last_entry_date == day:   # one entry per session
             return None
 
+        time_window_gate = context.metadata.get("time_window_gate")
+        if time_window_gate is not None and not time_window_gate.allow_entry(
+            context.symbol, context.timestamp
+        ):
+            context.metadata["entry_rejection"] = "time window not promoted"
+            return None
+
         spot = context.last_price or chain.underlying
         atm = chain.nearest_strike(spot)
         if atm is None:

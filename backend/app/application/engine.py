@@ -122,6 +122,7 @@ class TradingEngine:
         config: EngineConfig | None = None,
         session: TradingSession = NSE_SESSION,
         context_enricher: Callable[[MarketContext], None] | None = None,
+        time_window_gate=None,
     ) -> None:
         if strategy is None and selector is None:
             raise ValueError("Provide either a strategy or a selector.")
@@ -130,6 +131,7 @@ class TradingEngine:
         # Optional hook to enrich context each bar (e.g. inject an ICT setup
         # from candle data into metadata["tb002_setup"]).
         self.context_enricher = context_enricher
+        self.time_window_gate = time_window_gate
         self.feed = feed
         self.broker = broker
         self.portfolio = portfolio
@@ -923,6 +925,8 @@ class TradingEngine:
             minutes_to_close=self.session.minutes_to_close(ts),
         )
         context.metadata["option_chain"] = snapshot.option_chain
+        if self.time_window_gate is not None:
+            context.metadata["time_window_gate"] = self.time_window_gate
         context.metadata["live_chain"] = any(
             quote.has_market_data for quote in snapshot.option_chain.quotes.values()
         )

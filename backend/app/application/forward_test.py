@@ -28,6 +28,7 @@ import os
 from app.application.live import LivePaperTrader
 from app.application.results_store import ResultsStore
 from app.core.config import settings
+from app.domains.analytics.time_window import TimeWindowTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -108,6 +109,9 @@ def run_forward_test(
         strategy=strat_obj,
         max_polls=max_polls,
         log=log,
+        time_window_gate=TimeWindowTracker(
+            os.path.join(settings.RESULTS_DIR, "time_window_stats.json")
+        ),
     )
 
     journal = trader.run()

@@ -100,6 +100,7 @@ class LivePaperTrader:
         bar_minutes: int = 1,
         execution_mode: ExecutionMode = ExecutionMode.PAPER,
         context_enricher=None,
+        time_window_gate=None,
         log: logging.Logger | None = None,
     ) -> "LivePaperTrader":
         """
@@ -128,6 +129,7 @@ class LivePaperTrader:
                 bar_minutes=bar_minutes,
             ),
             context_enricher=context_enricher,
+            time_window_gate=time_window_gate,
         )
         return cls(engine=engine, log=log)
 
@@ -145,6 +147,7 @@ class LivePaperTrader:
         strategy: BaseStrategy | None = None,
         max_polls: int | None = None,
         enable_ict: bool = True,
+        time_window_gate=None,
         log: logging.Logger | None = None,
     ) -> "LivePaperTrader":
         """
@@ -192,5 +195,6 @@ class LivePaperTrader:
             starting_capital=starting_capital,
             execution_mode=ExecutionMode.PAPER,
             context_enricher=enricher,
+            time_window_gate=time_window_gate,
             log=log,
         )

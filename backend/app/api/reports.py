@@ -83,6 +83,25 @@ async def daily_report(date: str | None = Query(default=None)) -> dict[str, Any]
     }
 
 
+@router.get("/reports/time-windows")
+async def time_window_report(symbol: str | None = Query(default=None)) -> dict[str, Any]:
+    """Return accumulated paper-trade time-window evidence and gate status."""
+    symbols = [symbol.upper()] if symbol else list(_store.time_window_tracker.symbols())
+    return {
+        "promotion_policy": {
+            "min_trades": _store.time_window_tracker.config.min_trades,
+            "min_sessions": _store.time_window_tracker.config.min_sessions,
+            "min_expectancy": _store.time_window_tracker.config.min_expectancy,
+            "min_profit_factor": _store.time_window_tracker.config.min_profit_factor,
+            "min_win_rate": _store.time_window_tracker.config.min_win_rate,
+        },
+        "symbols": {
+            name: _store.time_window_tracker.promotion_report(name)
+            for name in symbols
+        },
+    }
+
+
 @router.post("/reports/daily/export")
 async def export_daily(date: str | None = Query(default=None)) -> dict[str, Any]:
     """Write the daily report markdown to the Obsidian vault."""
