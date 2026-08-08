@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import date
+from glob import glob
+import os
 
 from app.application.engine import EngineConfig, TradingEngine
 from app.domains.analytics.journal import TradeJournal
@@ -131,6 +133,7 @@ def run_dhan_backtest(
     include_costs: bool = True,
     bar_minutes: int = 1,
     strategy: str = "AUTO",
+    files: list[str] | None = None,
 ) -> BacktestResult:
     """
     Backtest TB001 on REAL Dhan option-chain snapshots accumulated by AlphaEdge
@@ -140,7 +143,14 @@ def run_dhan_backtest(
     spec = get_instrument(symbol)
     prefix = symbol.upper()
 
-    feed = OptionChainHistoricalFeed.from_dhan_dir(directory, spec=spec, prefix=prefix)
+    if files is None:
+        feed = OptionChainHistoricalFeed.from_dhan_dir(
+            directory, spec=spec, prefix=prefix
+        )
+    else:
+        if not files:
+            raise ValueError("files must contain at least one historical CSV path")
+        feed = OptionChainHistoricalFeed.from_dhan_csv(files, spec=spec)
     cost_model = IndianOptionsCostModel() if include_costs else FlatCostModel(0.0)
     broker = PaperBroker(
         slippage_pct=slippage_pct, cost_model=cost_model, tick_size=spec.tick_size

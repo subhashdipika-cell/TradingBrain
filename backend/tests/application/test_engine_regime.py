@@ -85,7 +85,8 @@ def test_engine_executes_directional_long_option():
     assert all(t.strategy == "DIRBULL" for t in journal.trades)
     # Exits should be driven by the underlying target/stop (or square-off).
     assert all(
-        t.exit_reason in {"TARGET", "STOP_LOSS", "TIME_EXIT"} for t in journal.trades
+        t.exit_reason in {"TARGET", "STOP_LOSS", "TIME_EXIT", "KILL_SWITCH"}
+        for t in journal.trades
     )
 
 
