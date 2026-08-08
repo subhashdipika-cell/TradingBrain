@@ -92,6 +92,10 @@ class DhanOptionColumns:
     delta: str = "delta"
     theta: str = "theta"
     vega: str = "vega"
+    bid: str = "bid"
+    ask: str = "ask"
+    open_interest: str = "oi"
+    volume: str = "volume"
 
 
 def parse_datetime(value: str, fmt: str | None = None) -> datetime:
@@ -226,6 +230,10 @@ class _OptionRow:
     delta: float | None = None
     theta: float | None = None
     vega: float | None = None
+    bid: float = 0.0
+    ask: float = 0.0
+    open_interest: float = 0.0
+    volume: float = 0.0
 
 
 class OptionChainHistoricalFeed(DataFeed):
@@ -270,9 +278,19 @@ class OptionChainHistoricalFeed(DataFeed):
         self, timestamp: datetime, rows: list[_OptionRow]
     ) -> MarketSnapshot:
         spot = rows[0].underlying
-        expiry = rows[0].expiry or next_weekly_expiry(
+        default_expiry = next_weekly_expiry(
             timestamp.date(), self._expiry_weekday
         )
+        # AlphaEdge Dhan files can contain near and far expiries at the same
+        # timestamp. OptionChain is intentionally keyed by strike/right, so
+        # mixing expiries would silently overwrite near quotes with far quotes.
+        # The standard historical feed represents the tradable near expiry;
+        # select it explicitly here.
+        available_expiries = {
+            row.expiry or default_expiry for row in rows
+        }
+        expiry = min(available_expiries)
+        rows = [row for row in rows if (row.expiry or default_expiry) == expiry]
         tte = time_to_expiry_years(timestamp, expiry)
 
         chain = OptionChain(
@@ -294,6 +312,11 @@ class OptionChainHistoricalFeed(DataFeed):
                     right=row.right,
                     greeks=greeks,
                     underlying=spot,
+                    bid=row.bid,
+                    ask=row.ask,
+                    open_interest=row.open_interest,
+                    volume=row.volume,
+                    quote_timestamp=timestamp,
                 )
             )
 
@@ -429,8 +452,31 @@ class OptionChainHistoricalFeed(DataFeed):
                             delta=_opt_float(raw.get(columns.delta)),
                             theta=_opt_float(raw.get(columns.theta)),
                             vega=_opt_float(raw.get(columns.vega)),
+                            bid=_opt_float(raw.get(columns.bid)) or 0.0,
+                            ask=_opt_float(raw.get(columns.ask)) or 0.0,
+                            open_interest=(
+                                _opt_float(raw.get(columns.open_interest)) or 0.0
+                            ),
+                            volume=_opt_float(raw.get(columns.volume)) or 0.0,
                         )
                     )
+        # A collector snapshot can contain several expiries interleaved at
+        # different seconds. The normal feed trades the nearest expiry, so
+        # choose one near expiry per session before grouping timestamps. This
+        # prevents a later far-expiry-only snapshot from replacing the near
+        # chain and creating an artificial multi-hundred-point PnL jump.
+        near_by_day: dict[date, date] = {}
+        for row in rows:
+            if row.expiry is None:
+                continue
+            day = row.timestamp.date()
+            near_by_day[day] = min(near_by_day.get(day, row.expiry), row.expiry)
+        rows = [
+            row
+            for row in rows
+            if row.expiry is None
+            or row.expiry == near_by_day.get(row.timestamp.date(), row.expiry)
+        ]
         return cls(spec=spec, rows=rows, **kwargs)  # type: ignore[arg-type]
 
     @classmethod
