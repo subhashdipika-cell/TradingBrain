@@ -46,11 +46,14 @@ class CreditSellConfig:
     square_off_time: str = "15:15:00"
     short_delta: float = 0.18              # target absolute delta for shorts
     hedge_delta: float = 0.08              # target absolute delta for hedges
-    min_credit_to_width: float = 0.20
+    # Require enough premium relative to the defined loss width. Very low
+    # credit/width trades have poor reward-to-risk after costs and are more
+    # sensitive to small mark-to-market moves.
+    min_credit_to_width: float = 0.25
     max_spread_pct: float = 0.08
     min_open_interest: float = 100_000.0
     min_volume: float = 1_000.0
-    entry_after_min: int = 15              # wait this long after the open
+    entry_after_min: int = 30              # avoid opening auction noise
     min_minutes_left: int = 30             # don't open too close to the square-off
 
 
@@ -102,6 +105,7 @@ class CreditSellStrategy(BaseStrategy):
     # ── lifecycle ─────────────────────────────────────────────────────────────
     def initialize(self) -> None:
         self.enabled = True
+        self._last_entry_date = None
 
     def pre_market(self, context: MarketContext) -> None:
         return
@@ -191,10 +195,14 @@ class CreditSellStrategy(BaseStrategy):
         return
 
     def post_market(self, context: MarketContext) -> None:
-        self.reset()
+        # A new entry is permitted only after the next session starts. The
+        # engine calls reset() after every exit; clearing the date there would
+        # allow repeated same-day re-entry after a stop-loss, turning one bad
+        # regime into a sequence of losses.
+        self._last_entry_date = None
 
     def reset(self) -> None:
-        self._last_entry_date = None
+        return
 
     # ── leg construction (subclasses) ─────────────────────────────────────────
     def _legs(self, chain: OptionChain, complete: list[float], idx: int):
