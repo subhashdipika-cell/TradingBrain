@@ -93,3 +93,11 @@ class Broker(ABC):
             if fill is not None:
                 fills.append(fill)
         return fills
+
+    def cancel_pending(self) -> None:
+        """Cancel outstanding orders before a portfolio hard exit.
+
+        Paper/backtest brokers have no order book, while live adapters can
+        override this hook with the broker's cancel-all endpoint.
+        """
+        return None

@@ -31,7 +31,7 @@ from app.domains.execution.feed import DataFeed, MarketSnapshot
 from app.domains.market.indicators import analyse
 from app.domains.market.session import NSE_SESSION, TradingSession
 from app.domains.portfolio.portfolio import Portfolio
-from app.domains.risk.position_sizing import PositionSizer
+from app.domains.risk.position_sizing import PositionSizer, SizingResult
 from app.domains.risk.risk_engine import RiskEngine
 from app.domains.shared.enums import (
     ExecutionMode,
@@ -101,6 +101,8 @@ class _OpenTrade:
     margin: float = 0.0
     profit_target: float = 0.0  # rupees; bank and leave
     max_loss_rupees: float = 0.0  # rupees; hard stop
+    short_entry_premiums: dict[tuple[OptionRight, float], float] = field(default_factory=dict)
+    short_stop_multiple: float = 1.5
 
 
 class TradingEngine:
@@ -188,7 +190,7 @@ class TradingEngine:
         context = self._build_context(snapshot)
         for strat in self._strategies():
             strat.pre_market(context)
-        self.risk.start_session(self.portfolio.equity())
+        self.risk.start_session_at(self.portfolio.equity(), snapshot.timestamp)
         self.journal.record_event(
             snapshot.timestamp, f"Session start (equity {self.portfolio.equity():,.0f})"
         )
@@ -216,6 +218,7 @@ class TradingEngine:
         # Continuous account-level risk monitoring.
         decision = self.risk.update(self.portfolio, snapshot.timestamp)
         if decision.kill_switch_tripped:
+            self.broker.cancel_pending()
             if self._open_trade is not None:
                 self._close_position(snapshot, ExitReason.KILL_SWITCH)
             self.journal.record_event(
@@ -258,9 +261,99 @@ class TradingEngine:
             return
 
         spec = snapshot.spec
+        leg_specs = [dict(ls) for ls in leg_specs]
         body_strike = float(meta.get("body_strike", 0.0))
         entry_credit = float(meta.get("entry_credit", 0.0))
         wing_width = meta.get("wing_width")  # None when naked
+
+        # Every option-selling structure must identify a protective long leg
+        # for each short right. This check runs before any broker call.
+        pairs: list[tuple[OptionRight, float, float]] = []
+        for right in (OptionRight.CALL, OptionRight.PUT):
+            shorts = [
+                float(ls["strike"])
+                for ls in leg_specs
+                if str(ls.get("side", "")).upper() == "SELL"
+                and self._right(ls["right"]) is right
+            ]
+            longs = [
+                float(ls["strike"])
+                for ls in leg_specs
+                if str(ls.get("side", "")).upper() == "BUY"
+                and self._right(ls["right"]) is right
+            ]
+            if shorts and not longs:
+                self.journal.record_event(
+                    snapshot.timestamp,
+                    f"Entry blocked: naked {right.value} short has no hedge",
+                )
+                strategy.reset()
+                return
+            if shorts and longs:
+                pairs.append((right, shorts[0], max(longs, key=lambda strike: abs(strike - shorts[0]))))
+
+        if any(str(ls.get("side", "")).upper() == "SELL" for ls in leg_specs) and not pairs:
+            self.journal.record_event(snapshot.timestamp, "Entry blocked: unhedged option sale")
+            strategy.reset()
+            return
+
+        if pairs:
+            _, risk_short, risk_long = max(
+                pairs, key=lambda pair: abs(pair[2] - pair[1])
+            )
+            gate = self.risk.portfolio_gate.validate_and_scale_order(
+                self.portfolio,
+                strategy_type=str(meta.get("structure", "CREDIT_SPREAD")),
+                symbol=spec.symbol,
+                short_strike=risk_short,
+                long_strike=risk_long,
+                # A 10% credit haircut protects sizing from a worse fill than
+                # the strategy's indicative premium.
+                net_credit=max(entry_credit * 0.90, 0.0),
+                lot_size=spec.lot_size,
+                when=snapshot.timestamp,
+            )
+            if not gate.approved:
+                self.journal.record_event(
+                    snapshot.timestamp, f"Entry blocked: {gate.reason}"
+                )
+                strategy.reset()
+                return
+
+            # Bring all protective wings inside the same fixed-fractional risk
+            # envelope. The selector still chooses the initial strikes; the
+            # risk gate may move a hedge closer, never farther away.
+            for right, short, long in pairs:
+                adjusted = self.risk.portfolio_gate.sizer.adjust_hedge_strike(
+                    account_balance=self.portfolio.equity(),
+                    short_strike=short,
+                    long_strike=long,
+                    net_credit=max(entry_credit * 0.90, 0.0),
+                    symbol=spec.symbol,
+                    lot_size=spec.lot_size,
+                )
+                for ls in leg_specs:
+                    if (
+                        str(ls.get("side", "")).upper() == "BUY"
+                        and self._right(ls["right"]) is right
+                        and float(ls["strike"]) == long
+                    ):
+                        ls["strike"] = adjusted
+
+            sizing = SizingResult(
+                lots=gate.safe_lot_count,
+                units=gate.safe_lot_count * spec.lot_size,
+                capital_used=gate.max_possible_loss,
+                reason=gate.reason,
+            )
+        else:
+            # Do not permit a premium-selling signal to fall back to the old
+            # margin-only sizing path when it contains a short leg.
+            if any(str(ls.get("side", "")).upper() == "SELL" for ls in leg_specs):
+                self.journal.record_event(snapshot.timestamp, "Entry blocked: no defined-risk hedge")
+                strategy.reset()
+                return
+            sizing = None
 
         legs = [
             _Leg(
@@ -279,7 +372,10 @@ class TradingEngine:
         #   The hedge both caps the loss and slashes margin (the point of the
         #   user's hedge-first rule), so risk - not margin - is the constraint.
         # - Naked: size by SPAN margin deployment (capital_allocation).
-        if wing_width is not None:
+        if sizing is not None:
+            max_loss_per_unit = max(float(wing_width or 0.0) - entry_credit, 1.0)
+            margin_per_lot = max_loss_per_unit * spec.lot_size
+        elif wing_width is not None:
             max_loss_per_unit = max(float(wing_width) - entry_credit, 1.0)
             margin_per_lot = max_loss_per_unit * spec.lot_size
             allocation = signal.requested_risk or self.config.capital_allocation
@@ -289,12 +385,13 @@ class TradingEngine:
             )
             allocation = self.config.capital_allocation
 
-        sizing = self.sizer.size_for_margin(
-            capital=self.portfolio.capital.starting_capital,
-            allocation_fraction=allocation,
-            margin_per_lot=margin_per_lot,
-            lot_size=spec.lot_size,
-        )
+        if sizing is None:
+            sizing = self.sizer.size_for_margin(
+                capital=self.portfolio.capital.starting_capital,
+                allocation_fraction=allocation,
+                margin_per_lot=margin_per_lot,
+                lot_size=spec.lot_size,
+            )
         if not sizing.is_tradable:
             strategy.reset()
             return
@@ -329,9 +426,12 @@ class TradingEngine:
         fills = self.broker.submit_basket(orders, snapshot)
         entry_commission = 0.0
         actual_entry_credit = 0.0
+        short_entry_premiums: dict[tuple[OptionRight, float], float] = {}
         for fill in fills:
             self._book_fill(fill, fill.order.right, fill.order.strike)
             entry_commission += fill.commission
+            if fill.order.quantity < 0 and fill.order.right is not None and fill.order.strike is not None:
+                short_entry_premiums[(fill.order.right, fill.order.strike)] = fill.price
             actual_entry_credit += (
                 -fill.quantity * fill.price / sizing.units
             )
@@ -387,6 +487,8 @@ class TradingEngine:
             legs=legs,
             kind="CREDIT",
             strategy_name=strategy.name,
+            short_entry_premiums=short_entry_premiums,
+            short_stop_multiple=max(float(meta.get("short_stop_multiple", 1.5)), 1.5),
         )
         self._position_strategy = strategy
         self.risk.record_trade()
@@ -611,6 +713,11 @@ class TradingEngine:
         elif trade.kind == "DEBIT":
             reason = self._directional_exit(snapshot, trade)
         else:
+            if self._short_leg_stop_hit(snapshot, trade):
+                reason = ExitReason.STOP_LOSS
+            if reason is not None:
+                self._close_position(snapshot, reason)
+                return
             cost_to_close = self._cost_to_close(snapshot, trade)
             if cost_to_close is None:
                 return
@@ -629,6 +736,14 @@ class TradingEngine:
 
         if reason is not None:
             self._close_position(snapshot, reason)
+
+    def _short_leg_stop_hit(self, snapshot: MarketSnapshot, trade: _OpenTrade) -> bool:
+        """Exit if any written option reaches its hard premium stop."""
+        for (right, strike), entry_premium in trade.short_entry_premiums.items():
+            current = snapshot.option_price(right, strike)
+            if current >= entry_premium * trade.short_stop_multiple:
+                return True
+        return False
 
     def _directional_exit(
         self, snapshot: MarketSnapshot, trade: _OpenTrade

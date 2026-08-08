@@ -21,12 +21,13 @@ class RiskLimits:
     """Platform-level risk limits."""
 
     # Loss controls (fractions of capital)
-    max_daily_loss: float = 0.05
+    max_daily_loss: float = 0.025
     max_drawdown: float = 0.10
-    max_position_risk: float = 0.02
+    max_position_risk: float = 0.01
+    max_weekly_loss: float = 0.05
 
     # Capital deployment
-    max_capital_per_trade: float = 0.33
+    max_capital_per_trade: float = 0.20
     max_total_exposure: float = 1.0
 
     # Greeks ceilings (absolute, in underlying units across the book)
@@ -42,6 +43,7 @@ class RiskLimits:
             ("max_daily_loss", self.max_daily_loss),
             ("max_drawdown", self.max_drawdown),
             ("max_position_risk", self.max_position_risk),
+            ("max_weekly_loss", self.max_weekly_loss),
             ("max_capital_per_trade", self.max_capital_per_trade),
             ("max_total_exposure", self.max_total_exposure),
         ):

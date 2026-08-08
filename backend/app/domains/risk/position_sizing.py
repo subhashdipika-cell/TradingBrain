@@ -16,6 +16,17 @@ Author: TradingBrain
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import floor
+
+
+INDEX_LOT_SIZES: dict[str, int] = {
+    "NIFTY": 65,
+    "NIFTY50": 65,
+    "BANKNIFTY": 30,
+    "FINNIFTY": 60,
+}
+
+DEFAULT_MAX_LOTS = 20
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,13 +41,129 @@ class SizingResult:
         return self.lots > 0
 
 
+@dataclass(frozen=True, slots=True)
+class SpreadSizingResult:
+    """Risk-based result for a defined-risk credit spread structure."""
+
+    safe_lot_count: int
+    max_possible_loss: float
+    is_trade_allowed: bool
+    spread_width: float
+    adjusted_long_strike: float | None = None
+    reason: str = ""
+
+
 class PositionSizer:
     """Computes lot sizes from capital and risk parameters."""
 
-    def __init__(self, *, default_margin_pct: float = 0.12) -> None:
+    def __init__(
+        self,
+        *,
+        default_margin_pct: float = 0.12,
+        risk_fraction: float = 0.01,
+        max_lots_per_trade: int = DEFAULT_MAX_LOTS,
+        symbol_lot_sizes: dict[str, int] | None = None,
+    ) -> None:
         # Approximate SPAN+exposure margin as a fraction of notional. The live
         # broker margin API replaces this estimate in production.
         self._default_margin_pct = default_margin_pct
+        if not 0.0 < risk_fraction <= 0.015:
+            raise ValueError("risk_fraction must be within (0, 0.015].")
+        if max_lots_per_trade <= 0:
+            raise ValueError("max_lots_per_trade must be positive.")
+        self._risk_fraction = risk_fraction
+        self._max_lots_per_trade = max_lots_per_trade
+        self._symbol_lot_sizes = {
+            **INDEX_LOT_SIZES,
+            **(symbol_lot_sizes or {}),
+        }
+
+    def lot_size_for(self, symbol: str, fallback: int | None = None) -> int:
+        """Return the configured lot size, using the broker contract as fallback."""
+        key = symbol.upper().replace(" ", "")
+        if key in self._symbol_lot_sizes:
+            return self._symbol_lot_sizes[key]
+        if fallback is not None and fallback > 0:
+            return fallback
+        raise ValueError(f"No lot size configured for symbol {symbol!r}.")
+
+    def size_credit_spread(
+        self,
+        *,
+        account_balance: float,
+        strategy_type: str,
+        short_strike: float,
+        long_strike: float,
+        net_credit: float,
+        symbol: str,
+        lot_size: int | None = None,
+        requested_lots: int | None = None,
+    ) -> SpreadSizingResult:
+        """Size a credit spread using fixed-fractional maximum loss.
+
+        ``net_credit`` is the total structure credit per underlying point. For
+        an Iron Condor, callers pass the widest wing as ``long_strike`` and
+        ``short_strike``. The optional requested lot count can only reduce the
+        safe size; it can never override risk limits.
+        """
+        if account_balance <= 0:
+            return SpreadSizingResult(0, 0.0, False, 0.0, reason="invalid account balance")
+        width = abs(float(long_strike) - float(short_strike))
+        if width <= 0 or net_credit < 0:
+            return SpreadSizingResult(0, 0.0, False, width, reason="invalid spread geometry")
+
+        multiplier = lot_size or self.lot_size_for(symbol)
+        risk_per_unit = max(width - float(net_credit), 0.0)
+        risk_per_lot = risk_per_unit * multiplier
+        if risk_per_lot <= 0:
+            return SpreadSizingResult(0, 0.0, False, width, reason="credit exceeds spread width")
+
+        risk_budget = account_balance * self._risk_fraction
+        safe_lots = floor(risk_budget / risk_per_lot)
+        safe_lots = min(safe_lots, self._max_lots_per_trade)
+        if requested_lots is not None:
+            safe_lots = min(safe_lots, max(0, requested_lots))
+        if safe_lots <= 0:
+            return SpreadSizingResult(
+                0, 0.0, False, width, reason="risk budget below one lot"
+            )
+        return SpreadSizingResult(
+            safe_lot_count=safe_lots,
+            max_possible_loss=risk_per_lot * safe_lots,
+            is_trade_allowed=True,
+            spread_width=width,
+            reason=f"{strategy_type} fixed-fractional sizing",
+        )
+
+    def max_allowed_spread_width(
+        self, *, account_balance: float, net_credit: float, symbol: str, lot_size: int | None = None
+    ) -> float:
+        """Maximum width that keeps one lot within the configured risk budget."""
+        multiplier = lot_size or self.lot_size_for(symbol)
+        return account_balance * self._risk_fraction / multiplier + net_credit
+
+    def adjust_hedge_strike(
+        self,
+        *,
+        account_balance: float,
+        short_strike: float,
+        long_strike: float,
+        net_credit: float,
+        symbol: str,
+        lot_size: int | None = None,
+    ) -> float:
+        """Move a protective long strike closer when the requested wing is too wide."""
+        max_width = self.max_allowed_spread_width(
+            account_balance=account_balance,
+            net_credit=net_credit,
+            symbol=symbol,
+            lot_size=lot_size,
+        )
+        width = abs(long_strike - short_strike)
+        if width <= max_width:
+            return long_strike
+        direction = 1.0 if long_strike > short_strike else -1.0
+        return short_strike + direction * max_width
 
     def margin_per_lot(
         self, *, spot: float, lot_size: int, margin_pct: float | None = None

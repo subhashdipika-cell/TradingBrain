@@ -21,6 +21,7 @@ from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.drawdown import DrawdownTracker
 from app.domains.risk.kill_switch import KillSwitch
 from app.domains.risk.limits import RiskLimits
+from app.domains.risk.portfolio_gate import PortfolioRiskGate
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +48,7 @@ class RiskEngine:
         self.limits = limits or RiskLimits()
         self.drawdown = DrawdownTracker(max_drawdown_fraction=self.limits.max_drawdown)
         self.kill_switch = KillSwitch()
+        self.portfolio_gate = PortfolioRiskGate(self.limits)
         self._day_start_equity: float | None = None
         self._trades_today: int = 0
 
@@ -58,6 +60,18 @@ class RiskEngine:
         self._trades_today = 0
         self.drawdown.update(equity)
 
+    def start_session_at(self, equity: float, when: datetime) -> None:
+        """Start a session with the portfolio gate's dated baselines."""
+        if self.kill_switch.is_active and self.kill_switch.reason.startswith("daily drawdown"):
+            self.kill_switch.reset()
+        self.start_session(equity)
+        self.portfolio_gate.start_session(equity, when)
+
+    @property
+    def execution_mode(self):
+        """The gate's current mode; weekly loss forces PAPER mode."""
+        return self.portfolio_gate.execution_mode
+
     def record_trade(self) -> None:
         self._trades_today += 1
 
@@ -68,6 +82,11 @@ class RiskEngine:
         """Update trackers and trip the kill switch on hard breaches."""
         equity = portfolio.equity()
         self.drawdown.update(equity)
+
+        gate = self.portfolio_gate.update(portfolio, when)
+        if not gate.approved:
+            self.kill_switch.trip(gate.reason, when)
+            return RiskDecision.block(gate.reason, kill=True)
 
         if self.drawdown.is_breached():
             self.kill_switch.trip(
@@ -93,6 +112,11 @@ class RiskEngine:
         """Decide whether a new entry may proceed."""
         if not self.kill_switch.allow_new_entries():
             return RiskDecision.block(f"kill switch active: {self.kill_switch.reason}")
+
+        if self.portfolio_gate.entries_disabled or self.portfolio_gate.paper_only:
+            return RiskDecision.block(
+                self.portfolio_gate.reason or "portfolio risk gate is closed"
+            )
 
         if len(portfolio.open_positions()) >= self.limits.max_open_positions:
             return RiskDecision.block("max open positions reached")
