@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.domains.portfolio.portfolio import Portfolio
+from app.domains.execution.broker import Order
+from app.domains.market.option_chain import OptionChain
 from app.domains.risk.drawdown import DrawdownTracker
 from app.domains.risk.kill_switch import KillSwitch
 from app.domains.risk.limits import RiskLimits
@@ -107,7 +109,12 @@ class RiskEngine:
     # Entry gate (called before opening a position)
     # ------------------------------------------------------------------
     def approve_entry(
-        self, portfolio: Portfolio, *, new_capital: float = 0.0
+        self,
+        portfolio: Portfolio,
+        *,
+        new_capital: float = 0.0,
+        chain: OptionChain | None = None,
+        proposed_orders: list[Order] | None = None,
     ) -> RiskDecision:
         """Decide whether a new entry may proceed."""
         if not self.kill_switch.allow_new_entries():
@@ -127,6 +134,36 @@ class RiskEngine:
         cap = portfolio.capital.starting_capital
         if new_capital > cap * self.limits.max_capital_per_trade:
             return RiskDecision.block("trade exceeds per-trade capital limit")
+
+        if chain is not None and proposed_orders:
+            exposure = portfolio.net_greeks(chain)
+            for order in proposed_orders:
+                if order.right is None or order.strike is None:
+                    continue
+                quote = chain.get(order.strike, order.right)
+                if quote is None:
+                    return RiskDecision.block(
+                        f"Greek check unavailable: missing quote for {order.strike:.0f} {order.right.value}"
+                    )
+                quantity = order.quantity
+                greeks = quote.greeks
+                exposure = type(exposure)(
+                    delta=exposure.delta + greeks.delta * quantity,
+                    gamma=exposure.gamma + greeks.gamma * quantity,
+                    theta=exposure.theta + greeks.theta * quantity,
+                    vega=exposure.vega + greeks.vega * quantity,
+                    rho=exposure.rho + greeks.rho * quantity,
+                )
+            if abs(exposure.delta) > self.limits.max_net_delta:
+                return RiskDecision.block(
+                    f"projected net delta {exposure.delta:.2f} exceeds "
+                    f"limit {self.limits.max_net_delta:.2f}"
+                )
+            if abs(exposure.gamma) > self.limits.max_net_gamma:
+                return RiskDecision.block(
+                    f"projected net gamma {exposure.gamma:.4f} exceeds "
+                    f"limit {self.limits.max_net_gamma:.4f}"
+                )
 
         return RiskDecision.allow("entry approved")
 

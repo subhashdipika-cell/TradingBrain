@@ -61,7 +61,7 @@ def _resolve_actor(name: str):
     from app.domains.strategy.selector import default_selector, register_all_strategies
 
     if (name or "AUTO").upper() == "AUTO":
-        return None, default_selector(), RiskLimits(max_daily_loss=0.03, max_drawdown=0.10), 0.25
+        return None, default_selector(), RiskLimits(), 0.25
 
     register_all_strategies()
     strat = StrategyRegistry.get(name)()
@@ -69,7 +69,7 @@ def _resolve_actor(name: str):
     return (
         strat, None,
         RiskLimits(
-            max_daily_loss=getattr(cfg, "max_daily_loss", 0.03),
+            max_daily_loss=getattr(cfg, "max_daily_loss", 0.025),
             max_drawdown=getattr(cfg, "max_strategy_drawdown", 0.10),
         ),
         getattr(cfg, "capital_allocation", 0.25),

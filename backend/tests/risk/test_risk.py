@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.drawdown import DrawdownTracker
@@ -11,6 +11,9 @@ from app.domains.risk.limits import RiskLimits
 from app.domains.risk.position_sizing import PositionSizer
 from app.domains.risk.risk_engine import RiskEngine
 from app.domains.shared.enums import OptionRight
+from app.domains.execution.broker import Order
+from app.domains.market.greeks import OptionGreeks
+from app.domains.market.option_chain import OptionChain, OptionQuote
 
 
 def test_margin_based_sizing():
@@ -69,3 +72,33 @@ def test_risk_engine_blocks_after_daily_loss():
     decision = engine.update(pf, datetime(2026, 1, 1, 12, 0))
     assert decision.kill_switch_tripped
     assert engine.approve_entry(pf).approved is False
+
+
+def test_risk_engine_blocks_projected_delta_before_order():
+    pf = Portfolio(1_000_000)
+    engine = RiskEngine(RiskLimits(max_net_delta=100.0, max_net_gamma=10_000.0))
+    engine.start_session_at(pf.equity(), datetime(2026, 1, 1, 9, 15))
+    ts = datetime(2026, 1, 1, 9, 20)
+    chain = OptionChain(
+        symbol="NIFTY", underlying=25_000, expiry=date(2026, 1, 8), timestamp=ts
+    )
+    chain.add(
+        OptionQuote(
+            symbol="NIFTY", expiry=date(2026, 1, 8), strike=25_000,
+            right=OptionRight.CALL,
+            greeks=OptionGreeks(100.0, 0.8, 0.02, -1.0, 2.0, 0.0),
+            underlying=25_000,
+        )
+    )
+    decision = engine.approve_entry(
+        pf,
+        chain=chain,
+        proposed_orders=[
+            Order(
+                symbol="NIFTY", instrument="NIFTY25000CE", quantity=130,
+                right=OptionRight.CALL, strike=25_000,
+            )
+        ],
+    )
+    assert not decision.approved
+    assert "delta" in decision.reason

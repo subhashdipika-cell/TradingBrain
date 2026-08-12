@@ -193,3 +193,40 @@ def test_basket_aborts_when_a_leg_is_unresolvable(tmp_path):
         ),
     ]
     assert broker.submit_basket(orders, snapshot) == []
+
+
+def test_dhan_broker_reconciles_actual_fill(tmp_path):
+    p = tmp_path / "scrip.csv"
+    _write_master(p)
+    broker = DhanBroker(
+        client_id="c", access_token="t", scrip_master=ScripMaster(str(p)),
+        dry_run=False, fill_timeout_seconds=0.01, fill_poll_seconds=0.001,
+    )
+    broker._client = _FakeDhanClient()
+    fill = broker.submit(
+        Order(
+            symbol="NIFTY", instrument="NIFTY25000CE", quantity=-75,
+            right=OptionRight.CALL, strike=25000,
+        ),
+        _snapshot(tmp_path),
+    )
+    assert fill is not None
+    assert fill.quantity == -75
+    assert fill.price == 101.25
+    assert fill.metadata["reconciled"] is True
+
+
+class _FakeDhanClient:
+    def place_order(self, **kwargs):
+        return {"status": "success", "data": {"orderId": "order-1"}}
+
+    def get_order_by_id(self, order_id):
+        return {
+            "status": "success",
+            "data": {
+                "orderId": order_id,
+                "orderStatus": "TRADED",
+                "filledQty": 75,
+                "averageTradedPrice": 101.25,
+            },
+        }

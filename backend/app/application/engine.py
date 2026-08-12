@@ -264,6 +264,19 @@ class TradingEngine:
 
         spec = snapshot.spec
         leg_specs = [dict(ls) for ls in leg_specs]
+        proposed_orders = [
+            Order(
+                symbol=spec.symbol,
+                instrument=self._instrument(
+                    spec.symbol, float(ls["strike"]), self._right(ls["right"])
+                ),
+                quantity=1 if str(ls.get("side", "")).upper() == "BUY" else -1,
+                right=self._right(ls["right"]),
+                strike=float(ls["strike"]),
+                tag=f"{strategy.name}_RISK_PREVIEW",
+            )
+            for ls in leg_specs
+        ]
         body_strike = float(meta.get("body_strike", 0.0))
         entry_credit = float(meta.get("entry_credit", 0.0))
         wing_width = meta.get("wing_width")  # None when naked
@@ -399,7 +412,20 @@ class TradingEngine:
             return
 
         entry_gate = self.risk.approve_entry(
-            self.portfolio, new_capital=sizing.capital_used
+            self.portfolio,
+            new_capital=sizing.capital_used,
+            chain=snapshot.option_chain,
+            proposed_orders=[
+                Order(
+                    symbol=order.symbol,
+                    instrument=order.instrument,
+                    quantity=order.quantity * sizing.units,
+                    right=order.right,
+                    strike=order.strike,
+                    tag=order.tag,
+                )
+                for order in proposed_orders
+            ],
         )
         if not entry_gate.approved:
             self.journal.record_event(
@@ -441,7 +467,9 @@ class TradingEngine:
         # A multi-leg option structure must be all-or-nothing. Roll back any
         # partial basket so a missing hedge or short leg cannot become a
         # phantom open trade or leave unbounded exposure.
-        if len(fills) != len(orders):
+        if len(fills) != len(orders) or any(
+            abs(fill.quantity) != abs(fill.order.quantity) for fill in fills
+        ):
             for fill in reversed(fills):
                 rollback = self.broker.submit(
                     Order(
@@ -533,7 +561,19 @@ class TradingEngine:
         units = lots * spec.lot_size
 
         gate = self.risk.approve_entry(
-            self.portfolio, new_capital=premium_per_lot * lots
+            self.portfolio,
+            new_capital=premium_per_lot * lots,
+            chain=snapshot.option_chain,
+            proposed_orders=[
+                Order(
+                    symbol=spec.symbol,
+                    instrument=instrument,
+                    quantity=units,
+                    right=right,
+                    strike=strike,
+                    tag=f"{strategy.name}_ENTRY_LONG",
+                )
+            ],
         )
         if not gate.approved:
             self.journal.record_event(
@@ -620,16 +660,6 @@ class TradingEngine:
             strategy.reset()
             return
 
-        gate = self.risk.approve_entry(self.portfolio, new_capital=base_margin * mult)
-        if not gate.approved:
-            self.journal.record_event(
-                snapshot.timestamp, f"Entry blocked: {gate.reason}"
-            )
-            strategy.reset()
-            return
-
-        realized_start = self.portfolio.realized_pnl()
-
         # Build legs; submit hedges (BUY) before writes (SELL).
         legs: list[_Leg] = []
         for spec_leg in meta["calendar_legs"]:
@@ -647,6 +677,37 @@ class TradingEngine:
                     bucket=bucket,
                 )
             )
+
+        # The near-expiry chain is available for the calendar's near legs. We
+        # deliberately gate on those legs; the far hedge is additional
+        # protection and must never be credited to make the near exposure look
+        # safer than it is.
+        near_orders = [
+            Order(
+                symbol=spec.symbol,
+                instrument=leg.instrument,
+                quantity=(leg.lots * lot_size if leg.side == "BUY" else -leg.lots * lot_size),
+                right=leg.right,
+                strike=leg.strike,
+                expiry_bucket=leg.bucket,
+                tag=f"{strategy.name}_RISK_PREVIEW",
+            )
+            for leg in legs if leg.bucket == "near"
+        ]
+        gate = self.risk.approve_entry(
+            self.portfolio,
+            new_capital=base_margin * mult,
+            chain=snapshot.option_chain,
+            proposed_orders=near_orders,
+        )
+        if not gate.approved:
+            self.journal.record_event(
+                snapshot.timestamp, f"Entry blocked: {gate.reason}"
+            )
+            strategy.reset()
+            return
+
+        realized_start = self.portfolio.realized_pnl()
 
         entry_commission = 0.0
         for leg in sorted(legs, key=lambda x: 0 if x.side == "BUY" else 1):

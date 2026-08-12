@@ -352,6 +352,8 @@ class DhanBroker(Broker):
         product_type: str = "MARGIN",
         order_type: str = "MARKET",
         dry_run: bool = True,
+        fill_timeout_seconds: float = 8.0,
+        fill_poll_seconds: float = 0.5,
     ) -> None:
         self._client_id = client_id
         self._access_token = access_token
@@ -359,6 +361,8 @@ class DhanBroker(Broker):
         self._product_type = product_type
         self._order_type = order_type
         self._dry_run = dry_run
+        self._fill_timeout_seconds = fill_timeout_seconds
+        self._fill_poll_seconds = fill_poll_seconds
         self._client = None
 
     def _ensure_client(self):
@@ -399,6 +403,30 @@ class DhanBroker(Broker):
             if "_error" in data:
                 return None
             order_id = data.get("orderId") or data.get("order_id")
+            if not order_id:
+                return None
+
+            reconciled = self._reconcile_order(
+                self._ensure_client(), str(order_id), abs(order.quantity)
+            )
+            if reconciled is None:
+                return None
+            filled_quantity, average_price, status = reconciled
+            return Fill(
+                order=order,
+                quantity=(filled_quantity if order.is_buy else -filled_quantity),
+                price=average_price,
+                timestamp=snapshot.timestamp,
+                commission=0.0,
+                metadata={
+                    "security_id": info.security_id,
+                    "exchange_segment": info.exchange_segment,
+                    "order_id": order_id,
+                    "order_status": status,
+                    "dry_run": False,
+                    "reconciled": True,
+                },
+            )
 
         return Fill(
             order=order,
@@ -413,6 +441,93 @@ class DhanBroker(Broker):
                 "dry_run": self._dry_run,
             },
         )
+
+    def _reconcile_order(
+        self, client, order_id: str, requested_quantity: int
+    ) -> tuple[int, float, str] | None:
+        """Wait for Dhan's terminal status and return actual filled values.
+
+        Dhan exposes ``filledQty``/``averageTradedPrice`` on order status and
+        also exposes trades by order id. The latter is used as a fallback for
+        SDK/version differences and partial executions.
+        """
+        deadline = _time.monotonic() + self._fill_timeout_seconds
+        last_status = "UNKNOWN"
+        while _time.monotonic() <= deadline:
+            payload = self._order_status(client, order_id)
+            if payload:
+                last_status = str(payload.get("orderStatus") or payload.get("order_status") or "UNKNOWN").upper()
+                filled = self._number(payload, "filledQty", "filled_qty", "tradedQuantity")
+                average = self._number(payload, "averageTradedPrice", "average_traded_price", "tradedPrice")
+                if filled > 0 and average > 0 and last_status in {"TRADED", "PART_TRADED", "PARTIALLY_FILLED"}:
+                    if filled >= requested_quantity or last_status != "PART_TRADED":
+                        return min(filled, requested_quantity), average, last_status
+                if last_status in {"REJECTED", "CANCELLED", "EXPIRED"}:
+                    return None
+            _time.sleep(self._fill_poll_seconds)
+
+        # A timeout must not be treated as a fill. Cancel only while pending;
+        # an already executed order is recovered from the trade endpoint.
+        trades = self._trade_details(client, order_id)
+        if trades:
+            quantity = sum(self._number(t, "tradedQuantity", "traded_quantity") for t in trades)
+            turnover = sum(
+                self._number(t, "tradedQuantity", "traded_quantity")
+                * self._number(t, "tradedPrice", "traded_price")
+                for t in trades
+            )
+            if quantity > 0 and turnover > 0:
+                return min(quantity, requested_quantity), turnover / quantity, "TRADED"
+        if last_status in {"PENDING", "TRANSIT", "PART_TRADED", "PARTIALLY_FILLED"}:
+            self._cancel_order(client, order_id)
+        return None
+
+    @staticmethod
+    def _number(payload: dict, *keys: str) -> float:
+        for key in keys:
+            value = payload.get(key)
+            if value not in (None, ""):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    pass
+        return 0.0
+
+    @staticmethod
+    def _order_status(client, order_id: str) -> dict:
+        method = getattr(client, "get_order_by_id", None)
+        if method is None:
+            method = getattr(client, "get_order", None)
+        if method is None:
+            return {}
+        try:
+            return _unwrap(method(order_id))
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _trade_details(client, order_id: str) -> list[dict]:
+        method = getattr(client, "get_trade_book", None)
+        if method is None:
+            return []
+        try:
+            payload = method(order_id)
+        except Exception:
+            return []
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        data = _unwrap(payload)
+        return [data] if data else []
+
+    @staticmethod
+    def _cancel_order(client, order_id: str) -> None:
+        method = getattr(client, "cancel_order", None)
+        if method is None:
+            return
+        try:
+            method(order_id)
+        except Exception:
+            return
 
     def submit_basket(
         self, orders: list[Order], snapshot: MarketSnapshot
