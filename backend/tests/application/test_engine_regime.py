@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import islice
+
 from app.application.engine import EngineConfig, TradingEngine
 from app.domains.execution.backtest_feed import BacktestFeed
 from app.domains.execution.paper_broker import PaperBroker
@@ -12,13 +14,17 @@ from app.domains.strategy.contracts.context import MarketContext
 from app.domains.strategy.contracts.signal import Signal
 from app.domains.strategy.contracts.strategy import BaseStrategy
 from app.domains.strategy.selector import default_selector
+from app.domains.market.volatility import annualized_realized_volatility
 
 
 def _engine(strategy=None, selector=None, feed=None):
     return TradingEngine(
         strategy=strategy,
         selector=selector,
-        feed=feed or BacktestFeed(num_days=8, bar_minutes=15, base_iv=0.13),
+        feed=feed
+        or BacktestFeed(
+            num_days=8, bar_minutes=15, annual_vol=0.08, base_iv=0.15
+        ),
         broker=PaperBroker(),
         portfolio=Portfolio(1_000_000),
         risk_engine=RiskEngine(),
@@ -33,6 +39,25 @@ def test_engine_with_selector_runs_range_seller_in_calm_regime():
     assert journal.trade_count >= 1
     assert all(t.strategy == "TB004" for t in journal.trades)
     assert all(t.structure == "IRON_CONDOR" for t in journal.trades)
+
+
+def test_engine_derives_rv_without_using_current_candle():
+    feed = BacktestFeed(
+        num_days=1, bar_minutes=15, annual_vol=0.12, base_iv=0.18, seed=3
+    )
+    snapshots = list(islice(feed.stream(), 23))
+    engine = _engine(selector=default_selector(), feed=feed)
+    context = None
+    for snapshot in snapshots:
+        context = engine._build_context(snapshot)
+
+    assert context is not None
+    expected = annualized_realized_volatility(
+        [snapshot.candle for snapshot in snapshots[:-1]], bar_minutes=15
+    )
+    assert expected is not None
+    assert context.historical_volatility == expected
+    assert context.metadata["rv_completed_candles"] == len(snapshots) - 1
 
 
 class _Bullish(BaseStrategy):

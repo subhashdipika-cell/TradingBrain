@@ -30,6 +30,7 @@ from app.domains.execution.broker import Broker, Order
 from app.domains.execution.feed import DataFeed, MarketSnapshot
 from app.domains.market.indicators import analyse
 from app.domains.market.session import NSE_SESSION, TradingSession
+from app.domains.market.volatility import annualized_realized_volatility
 from app.domains.portfolio.portfolio import Portfolio
 from app.domains.risk.position_sizing import PositionSizer, SizingResult
 from app.domains.risk.risk_engine import RiskEngine
@@ -243,7 +244,9 @@ class TradingEngine:
                 self._record_entry_skip(
                     snapshot.timestamp,
                     context,
-                    "no strategy mapped for current regime",
+                    context.metadata.get(
+                        "entry_rejection", "no strategy mapped for current regime"
+                    ),
                 )
                 return  # regime has no strategy mapped -> sit out
             signal = active.generate_signal(context)
@@ -1038,6 +1041,23 @@ class TradingEngine:
         context.metadata["lot_size"] = spec.lot_size
         if snapshot.far_chain is not None:
             context.metadata["option_chain_far"] = snapshot.far_chain
+
+        # Only candles strictly before this snapshot are completed. Repeated
+        # live polls share a timestamp, so their last candle remains forming and
+        # is excluded from RV to keep the AUTO decision point-in-time.
+        completed_candles = self._recent_candles
+        if (
+            completed_candles
+            and snapshot.candle.timestamp <= completed_candles[-1].timestamp
+        ):
+            completed_candles = completed_candles[:-1]
+        rv = annualized_realized_volatility(
+            completed_candles,
+            bar_minutes=self.config.bar_minutes,
+        )
+        if rv is not None:
+            context.historical_volatility = rv
+        context.metadata["rv_completed_candles"] = min(len(completed_candles), 61)
 
         # ── Market structure from indicators (drives regime + strategy routing) ──
         if (

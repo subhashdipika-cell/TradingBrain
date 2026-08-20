@@ -49,7 +49,15 @@ def test_zero_units_or_price_is_free():
 
 
 def test_costs_reduce_backtest_net_profit():
-    base = dict(num_days=12, seed=5, base_iv=0.15, annual_vol=0.08)
+    # Keep portfolio circuit breakers out of this unit test so both sides
+    # replay the same trades and isolate transaction-cost drag only.
+    base = dict(
+        num_days=12,
+        seed=5,
+        base_iv=0.15,
+        annual_vol=0.08,
+        starting_capital=10_000_000.0,
+    )
     with_costs = run_backtest(BacktestConfig(include_costs=True, **base))
     without_costs = run_backtest(BacktestConfig(include_costs=False, **base))
 

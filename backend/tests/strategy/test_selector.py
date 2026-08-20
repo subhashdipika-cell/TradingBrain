@@ -30,15 +30,24 @@ def _ctx(**kwargs) -> MarketContext:
         timeframe="5m",
         timestamp=datetime(2026, 6, 30, 9, 25),
         execution_mode=ExecutionMode.BACKTEST,
+        implied_volatility=0.15,
+        historical_volatility=0.10,
     )
     base.update(kwargs)
     return MarketContext(**base)
 
 
-def test_selector_routes_low_vol_range_to_iron_fly():
+def test_selector_routes_rich_low_vol_range_to_iron_fly():
     selector = default_selector()
     # Calm, low ADX + low IV -> RANGING + low vol -> TB001 Iron Fly.
-    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.LOW, adx=10))
+    strategy = selector.select(
+        _ctx(
+            volatility_regime=VolatilityRegime.LOW,
+            implied_volatility=0.09,
+            historical_volatility=0.08,
+            adx=10,
+        )
+    )
     assert isinstance(strategy, TB001Strategy)
 
 
@@ -62,11 +71,46 @@ def test_selector_routes_uptrend_to_bull_put_spread():
     assert isinstance(strategy, BullPutSpreadStrategy)
 
 
-def test_selector_stands_aside_in_extreme_vol():
-    # Extreme volatility -> tails too fat to sell -> stand aside (no strategy).
+def test_selector_keeps_extreme_rich_volatility_defined_risk():
+    # Rich extreme volatility is eligible only through the hedged Iron Condor.
     selector = default_selector()
-    strategy = selector.select(_ctx(volatility_regime=VolatilityRegime.EXTREME))
-    assert strategy is None
+    strategy = selector.select(
+        _ctx(
+            volatility_regime=VolatilityRegime.EXTREME,
+            implied_volatility=0.32,
+            historical_volatility=0.20,
+        )
+    )
+    assert isinstance(strategy, IronCondorStrategy)
+
+
+def test_selector_rejects_cheap_volatility_with_diagnostics():
+    selector = default_selector()
+    ctx = _ctx(implied_volatility=0.12, historical_volatility=0.13, adx=10)
+
+    assert selector.select(ctx) is None
+    assert ctx.metadata["volatility_edge_gate"]["allowed"] is False
+    assert "cheap volatility" in ctx.metadata["entry_rejection"]
+
+
+def test_selector_rejects_event_risk_even_with_rich_volatility():
+    selector = default_selector()
+    ctx = _ctx(
+        implied_volatility=0.25,
+        historical_volatility=0.12,
+        metadata={"event_risk": True},
+    )
+
+    assert selector.select(ctx) is None
+    assert ctx.metadata["entry_rejection"] == "event risk active"
+
+
+def test_selector_rejects_live_execution():
+    selector = default_selector()
+    ctx = _ctx(execution_mode=ExecutionMode.LIVE)
+
+    assert selector.select(ctx) is None
+    assert ctx.metadata["entry_rejection"] == "AUTO volatility-edge execution is PAPER-only"
 
 
 def test_selector_routes_reversal_to_tb002():

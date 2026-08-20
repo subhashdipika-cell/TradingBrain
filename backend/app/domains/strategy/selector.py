@@ -17,14 +17,77 @@ Author: TradingBrain
 
 from __future__ import annotations
 
+from dataclasses import asdict, dataclass
+
 from app.domains.intelligence.regime_detection import (
     RegimeClassifier,
     RuleBasedRegimeClassifier,
 )
-from app.domains.shared.enums import MarketRegime
+from app.domains.shared.enums import ExecutionMode, MarketRegime
 from app.domains.strategy.contracts.context import MarketContext
 from app.domains.strategy.contracts.registry import StrategyRegistry
 from app.domains.strategy.contracts.strategy import BaseStrategy
+
+
+@dataclass(frozen=True, slots=True)
+class VolatilityEdgePolicy:
+    """Eligibility thresholds for AUTO premium-selling selection."""
+
+    min_iv_rv_ratio: float = 1.05
+    min_edge: float = 0.005
+    high_iv: float = 0.20
+    high_vix: float = 28.0
+
+
+def _has_event_risk(context: MarketContext) -> bool:
+    """Read explicit point-in-time event flags supplied by a feed/enricher."""
+    return any(
+        bool(context.metadata.get(key))
+        for key in ("event_risk", "high_impact_event", "scheduled_event")
+    )
+
+
+def volatility_edge_allows(
+    context: MarketContext, policy: VolatilityEdgePolicy | None = None
+) -> bool:
+    """Fail-closed IV-versus-completed-RV gate with auditable diagnostics."""
+    policy = policy or VolatilityEdgePolicy()
+    iv = float(context.implied_volatility or 0.0)
+    rv = float(context.historical_volatility or 0.0)
+    edge = iv - rv
+    ratio = iv / rv if rv > 0 else 0.0
+    diagnostic = {
+        **asdict(policy),
+        "iv": iv,
+        "realized_volatility": rv,
+        "iv_rv_edge": edge,
+        "iv_rv_ratio": ratio,
+        "event_risk": _has_event_risk(context),
+        "allowed": False,
+    }
+
+    if context.execution_mode is ExecutionMode.LIVE:
+        reason = "AUTO volatility-edge execution is PAPER-only"
+    elif diagnostic["event_risk"]:
+        reason = "event risk active"
+    elif iv <= 0:
+        reason = "implied volatility unavailable"
+    elif rv <= 0:
+        reason = "insufficient completed data for realized volatility"
+    elif edge < policy.min_edge or ratio < policy.min_iv_rv_ratio:
+        reason = (
+            f"cheap volatility: IV {iv:.2%}, RV {rv:.2%}, "
+            f"edge {edge:.2%}, ratio {ratio:.2f}"
+        )
+    else:
+        reason = "volatility edge accepted"
+        diagnostic["allowed"] = True
+
+    diagnostic["reason"] = reason
+    context.metadata["volatility_edge_gate"] = diagnostic
+    if not diagnostic["allowed"]:
+        context.metadata["entry_rejection"] = reason
+    return bool(diagnostic["allowed"])
 
 
 class StrategySelector:
@@ -140,18 +203,24 @@ def register_all_strategies() -> None:
             StrategyRegistry.register(cls)
 
 
-def _structure_router(context: MarketContext) -> str | None:
+def _structure_router(
+    context: MarketContext,
+    *,
+    edge_policy: VolatilityEdgePolicy | None = None,
+    enforce_edge: bool = True,
+) -> str | None:
     """Pick the option-selling strategy that fits the current market structure.
 
     Structure is read from indicators the engine populates on the context
     (regime, trend direction, volatility). Mapping (confirmed with the user):
 
-      Range + low IV       -> TB001 Iron Fly (max theta, ATM)
+      Range + low IV       -> TB001 Iron Fly only with positive IV-RV edge
       Range + normal/high  -> TB004 Iron Condor (defined risk, wider)
       Uptrend              -> TB005 Bull Put Spread
       Downtrend            -> TB006 Bear Call Spread
       Strong breakout/rev. -> TB002 (ICT directional debit)
-      Extreme vol / no edge-> stand aside (None)
+      Rich high/extreme IV -> TB004 Iron Condor (defined risk)
+      Cheap IV / event risk-> stand aside (None)
     """
     from app.domains.shared.enums import TrendDirection, VolatilityRegime
 
@@ -159,8 +228,23 @@ def _structure_router(context: MarketContext) -> str | None:
     trend = context.trend
     vol = context.volatility_regime
 
-    if vol == VolatilityRegime.EXTREME:
-        return None  # stand aside — tails too fat to sell
+    if enforce_edge:
+        if not volatility_edge_allows(context, edge_policy):
+            return None
+
+        # Suitable rich high-volatility conditions stay hedged. This
+        # deliberately supersedes directional/range routing because tail risk
+        # dominates there.
+        policy = edge_policy or VolatilityEdgePolicy()
+        if (
+            context.implied_volatility >= policy.high_iv
+            or context.vix >= policy.high_vix
+            or vol in (VolatilityRegime.HIGH, VolatilityRegime.EXTREME)
+        ):
+            return "TB004"
+    elif vol == VolatilityRegime.EXTREME:
+        # Exact research baseline: this was the pre-gate AUTO behavior.
+        return None
 
     if regime in (MarketRegime.RANGING, MarketRegime.UNKNOWN):
         return "TB001" if vol == VolatilityRegime.LOW else "TB004"
@@ -185,7 +269,11 @@ def _structure_router(context: MarketContext) -> str | None:
     return "TB001"
 
 
-def default_selector() -> StrategySelector:
+def default_selector(
+    *,
+    edge_policy: VolatilityEdgePolicy | None = None,
+    enforce_volatility_edge: bool = True,
+) -> StrategySelector:
     """
     Build the structure-aware selector: it classifies the regime from indicators
     and routes to the option-selling strategy that fits (Iron Fly / Iron Condor /
@@ -203,5 +291,11 @@ def default_selector() -> StrategySelector:
     selector.map_regime(MarketRegime.REVERSAL, "TB002")
     # Ensure every routable strategy is initialised, then wire the fine router.
     selector.add_to_roster("TB001", "TB002", "TB003", "TB004", "TB005", "TB006")
-    selector.set_resolver(_structure_router)
+    selector.set_resolver(
+        lambda context: _structure_router(
+            context,
+            edge_policy=edge_policy,
+            enforce_edge=enforce_volatility_edge,
+        )
+    )
     return selector

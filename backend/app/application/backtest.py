@@ -17,8 +17,6 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import date
-from glob import glob
-import os
 
 from app.application.engine import EngineConfig, TradingEngine
 from app.domains.analytics.journal import TradeJournal
@@ -50,9 +48,12 @@ class BacktestConfig:
     # "AUTO" = regime-based selection across all strategies; or a specific name
     # (TB001..TB006) to isolate one strategy for testing.
     strategy: str = "AUTO"
+    # Research-only switch used to compare the prior selector with the
+    # production default. AUTO execution keeps this enabled.
+    enforce_volatility_edge: bool = True
 
 
-def _resolve_actor(name: str):
+def _resolve_actor(name: str, *, enforce_volatility_edge: bool = True):
     """Return (strategy, selector, risk_limits, capital_allocation).
 
     ``AUTO`` builds the structure-aware regime selector; a specific name builds
@@ -61,7 +62,12 @@ def _resolve_actor(name: str):
     from app.domains.strategy.selector import default_selector, register_all_strategies
 
     if (name or "AUTO").upper() == "AUTO":
-        return None, default_selector(), RiskLimits(), 0.25
+        return (
+            None,
+            default_selector(enforce_volatility_edge=enforce_volatility_edge),
+            RiskLimits(),
+            0.25,
+        )
 
     register_all_strategies()
     strat = StrategyRegistry.get(name)()
@@ -104,7 +110,9 @@ def run_backtest(config: BacktestConfig | None = None) -> BacktestResult:
         tick_size=spec.tick_size,
     )
     portfolio = Portfolio(starting_capital=cfg.starting_capital)
-    actor, selector, risk_limits, alloc = _resolve_actor(cfg.strategy)
+    actor, selector, risk_limits, alloc = _resolve_actor(
+        cfg.strategy, enforce_volatility_edge=cfg.enforce_volatility_edge
+    )
     engine = TradingEngine(
         strategy=actor,
         selector=selector,
@@ -133,6 +141,7 @@ def run_dhan_backtest(
     include_costs: bool = True,
     bar_minutes: int = 1,
     strategy: str = "AUTO",
+    enforce_volatility_edge: bool = True,
     files: list[str] | None = None,
 ) -> BacktestResult:
     """
@@ -155,7 +164,9 @@ def run_dhan_backtest(
     broker = PaperBroker(
         slippage_pct=slippage_pct, cost_model=cost_model, tick_size=spec.tick_size
     )
-    actor, selector, risk_limits, alloc = _resolve_actor(strategy)
+    actor, selector, risk_limits, alloc = _resolve_actor(
+        strategy, enforce_volatility_edge=enforce_volatility_edge
+    )
     engine = TradingEngine(
         strategy=actor,
         selector=selector,
