@@ -15,6 +15,7 @@ for %%P in (8200 5174) do (
 REM --- Close the launcher console windows by title (fallback) ---
 taskkill /F /FI "WINDOWTITLE eq TradingBrain Backend*" >nul 2>&1
 taskkill /F /FI "WINDOWTITLE eq TradingBrain Frontend*" >nul 2>&1
+taskkill /F /FI "WINDOWTITLE eq TradingBrain Forward Paper*" >nul 2>&1
 
 echo Done.
 timeout /t 2 >nul

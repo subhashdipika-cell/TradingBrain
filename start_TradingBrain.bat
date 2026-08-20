@@ -4,9 +4,18 @@ echo ============================================
 echo   Starting TradingBrain
 echo ============================================
 
+REM --- Optional instrument for the automatic paper forward engine ---
+set "SYMBOL=%~1"
+if "%SYMBOL%"=="" set "SYMBOL=NIFTY"
+echo   Paper instrument: %SYMBOL%
+
 REM --- Backend (FastAPI on port 8200) ---
 cd /d "%~dp0backend"
 start "TradingBrain Backend" cmd /k ".venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload"
+
+REM --- Dhan live-data / simulated-fill forward engine (paper only) ---
+REM The forward runner uses real market data but PaperBroker simulated fills.
+start "TradingBrain Forward Paper" cmd /k ".venv\Scripts\python.exe -m app.application.forward_test --symbol %SYMBOL%"
 
 REM --- Frontend (Vite dev server on port 5174) ---
 cd /d "%~dp0frontend"
@@ -15,6 +24,7 @@ start "TradingBrain Frontend" cmd /k "npm run dev"
 echo.
 echo   Backend  : http://localhost:8200   (API docs at /docs)
 echo   Frontend : http://localhost:5174
+echo   Forward  : %SYMBOL% paper engine (Dhan data, simulated fills)
 echo.
 echo Waiting for the frontend to come up...
 timeout /t 5 >nul
