@@ -53,6 +53,12 @@ class CreditSellConfig:
     max_spread_pct: float = 0.08
     min_open_interest: float = 100_000.0
     min_volume: float = 1_000.0
+    # Protective long wings are normally less active than the short strikes.
+    # They still require a real two-sided quote, but applying short-leg OI and
+    # volume thresholds to them made otherwise tradable condors disappear.
+    hedge_min_open_interest: float = 25_000.0
+    hedge_min_volume: float = 250.0
+    hedge_max_spread_pct: float = 0.15
     entry_after_min: int = 30              # avoid opening auction noise
     min_minutes_left: int = 30             # don't open too close to the square-off
 
@@ -110,19 +116,29 @@ class CreditSellStrategy(BaseStrategy):
     def pre_market(self, context: MarketContext) -> None:
         return
 
+    @staticmethod
+    def _reject(context: MarketContext, reason: str) -> None:
+        """Expose the exact gate that rejected the current entry attempt."""
+        context.metadata["entry_rejection"] = reason
+
     def generate_signal(self, context: MarketContext) -> Signal | None:
         if not self.enabled:
+            self._reject(context, "strategy disabled")
             return None
         chain: OptionChain | None = context.metadata.get("option_chain")
         if chain is None or not context.is_market_open:
+            self._reject(context, "market closed or option chain unavailable")
             return None
         cfg = self.configuration
         if context.minutes_from_open < cfg.entry_after_min:
+            self._reject(context, f"entry delay: {context.minutes_from_open}m < {cfg.entry_after_min}m")
             return None
         if context.minutes_to_close < cfg.min_minutes_left:
+            self._reject(context, f"too close to close: {context.minutes_to_close}m left")
             return None
         day = context.timestamp.date()
         if self._last_entry_date == day:   # one entry per session
+            self._reject(context, "one entry already attempted today")
             return None
 
         time_window_gate = context.metadata.get("time_window_gate")
@@ -135,40 +151,51 @@ class CreditSellStrategy(BaseStrategy):
         spot = context.last_price or chain.underlying
         atm = chain.nearest_strike(spot)
         if atm is None:
+            self._reject(context, "no complete ATM strike")
             return None
         complete = [
             s for s in chain.strikes()
             if chain.get(s, OptionRight.CALL) and chain.get(s, OptionRight.PUT)
         ]
         if atm not in complete:
+            self._reject(context, "ATM call/put pair incomplete")
             return None
         idx = complete.index(atm)
 
         plan = self._legs(chain, complete, idx)
         if plan is None:
+            self._reject(context, "no valid delta-based leg structure")
             return None
         structure, legs, credit, wing = plan
         if credit <= 0:
+            self._reject(context, "net credit is non-positive")
             return None
 
         strict_liquidity = bool(context.metadata.get("live_chain"))
         for leg in legs:
             quote = chain.get(float(leg["strike"]), OptionRight(leg["right"]))
             if quote is None:
+                self._reject(context, f"missing quote for {leg['right']} {leg['strike']}")
                 return None
+            is_hedge = str(leg.get("side", "")).upper() == "BUY"
             liquid, reason = quote.liquidity_check(
                 now=context.timestamp,
-                max_spread_pct=cfg.max_spread_pct,
-                min_open_interest=cfg.min_open_interest,
-                min_volume=cfg.min_volume,
+                max_spread_pct=(cfg.hedge_max_spread_pct if is_hedge else cfg.max_spread_pct),
+                min_open_interest=(
+                    cfg.hedge_min_open_interest if is_hedge else cfg.min_open_interest
+                ),
+                min_volume=(cfg.hedge_min_volume if is_hedge else cfg.min_volume),
                 require_microstructure=strict_liquidity,
             )
             if not liquid:
-                context.metadata["entry_rejection"] = f"liquidity: {reason}"
+                self._reject(
+                    context,
+                    f"liquidity {leg['side']} {leg['right']} {leg['strike']}: {reason}",
+                )
                 return None
 
         if wing is not None and credit / wing < cfg.min_credit_to_width:
-            context.metadata["entry_rejection"] = "credit-to-width below threshold"
+            self._reject(context, f"credit-to-width below threshold: {credit / wing:.2f}")
             return None
 
         self._last_entry_date = day

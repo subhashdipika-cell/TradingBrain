@@ -147,6 +147,10 @@ class TradingEngine:
         self._position_strategy: BaseStrategy | None = None
         self._current_day: date | None = None
         self._recent_candles: list = []  # rolling window for structure indicators
+        # A live Dhan poll can call the strategy several times per minute. Keep
+        # the journal useful by recording each distinct skip at most once per
+        # minute, instead of filling it with duplicate polling messages.
+        self._last_entry_skip: dict[str, datetime] = {}
 
     # ------------------------------------------------------------------
     # Strategy resolution (single strategy or regime-based selector)
@@ -236,12 +240,48 @@ class TradingEngine:
                 return
             active = self._select_for_entry(context)
             if active is None:
+                self._record_entry_skip(
+                    snapshot.timestamp,
+                    context,
+                    "no strategy mapped for current regime",
+                )
                 return  # regime has no strategy mapped -> sit out
             signal = active.generate_signal(context)
             if signal is not None and signal.is_entry:
                 self._open_position(signal, snapshot, active)
+            else:
+                self._record_entry_skip(
+                    snapshot.timestamp,
+                    context,
+                    context.metadata.get("entry_rejection", "strategy produced no entry signal"),
+                    strategy=active.name,
+                )
         else:
             self._manage_open_trade(snapshot, context)
+
+    def _record_entry_skip(
+        self,
+        timestamp: datetime,
+        context: MarketContext,
+        reason: object,
+        *,
+        strategy: str | None = None,
+    ) -> None:
+        """Journal actionable no-entry diagnostics with a one-minute throttle."""
+        text = str(reason)
+        key = f"{context.symbol}|{strategy or 'AUTO'}|{text}"
+        previous = self._last_entry_skip.get(key)
+        if previous is not None and (timestamp - previous).total_seconds() < 60:
+            return
+        self._last_entry_skip[key] = timestamp
+        regime = getattr(context.market_regime, "value", context.market_regime)
+        vol = getattr(context.volatility_regime, "value", context.volatility_regime)
+        self.journal.record_event(
+            timestamp,
+            f"ENTRY SKIP {context.symbol} {strategy or 'AUTO'}: {text} "
+            f"(regime={regime}, vol={vol}, iv={context.implied_volatility:.3f}, "
+            f"window={context.minutes_from_open}m)",
+        )
 
     # ------------------------------------------------------------------
     # Position lifecycle
@@ -559,6 +599,10 @@ class TradingEngine:
             strategy.reset()
             return
         units = lots * spec.lot_size
+        # Build the instrument before the risk preview. The preview order must
+        # be identical to the order that will be sent, and using it before
+        # assignment caused every directional signal to fail at runtime.
+        instrument = self._instrument(spec.symbol, strike, right)
 
         gate = self.risk.approve_entry(
             self.portfolio,
@@ -583,7 +627,6 @@ class TradingEngine:
             return
 
         realized_start = self.portfolio.realized_pnl()
-        instrument = self._instrument(spec.symbol, strike, right)
         fill = self.broker.submit(
             Order(
                 symbol=spec.symbol,
