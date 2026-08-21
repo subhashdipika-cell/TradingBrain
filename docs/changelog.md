@@ -2,6 +2,13 @@
 
 All notable changes to TradingBrain will be documented here.
 
+## TB-015 - Frontend dependency security refresh (2026-08-22)
+
+- Updated Vite's transitive PostCSS dependency from 8.5.16 to 8.5.26 and
+  nanoid from 3.3.15 to 3.3.18 through the existing lockfile, resolving the
+  current npm advisories without force, direct dependency changes, or major
+  version upgrades.
+
 ## TB-014 - PAPER strategy promotion gate (2026-08-22)
 
 - **Forward-only evidence**: completed `forward-test` trades are persisted and
