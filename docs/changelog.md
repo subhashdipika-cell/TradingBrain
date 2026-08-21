@@ -2,6 +2,20 @@
 
 All notable changes to TradingBrain will be documented here.
 
+## TB-014 - PAPER strategy promotion gate (2026-08-22)
+
+- **Forward-only evidence**: completed `forward-test` trades are persisted and
+  aggregated by strategy and instrument. Backtests and synthetic replays never
+  contribute to promotion.
+- **Conservative promotion policy**: requires at least 50 trades across 20
+  sessions, 50% profitable sessions, positive net expectancy, profit factor
+  1.20 or better, no more than 5% drawdown, and no single loss above 1% of the
+  observed starting-capital floor.
+- **PAPER boundary**: passing the gate permits controlled PAPER scaling only;
+  every API decision explicitly reports `live_authorized: false`.
+- **Dashboard**: Reports now shows policy thresholds, strategy/instrument
+  evidence, risk metrics, blockers, and a prominent LIVE-blocked banner.
+
 ## TB-013 - NSE holiday calendar + intraday entry cutoff (2026-07-05)
 
 - **Holiday calendar** (`app/domains/market/holidays.py`): NSE trading

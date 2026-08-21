@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from app.domains.analytics.journal import TradeJournal, TradeRecord
@@ -168,7 +168,7 @@ class TimeWindowTracker:
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         payload = {
             "version": 1,
-            "updated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "trade_ids": sorted(self._recorded_trade_ids),
             "symbols": {
                 symbol: {

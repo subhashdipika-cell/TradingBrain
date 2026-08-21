@@ -8,6 +8,7 @@ import { DailyReport } from "./components/DailyReport";
 import { EquityChart } from "./components/EquityChart";
 import { ForwardTestPanel } from "./components/ForwardTestPanel";
 import { HealthBadge } from "./components/HealthBadge";
+import { PaperPromotionReport } from "./components/PaperPromotionReport";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { SummaryCards } from "./components/SummaryCards";
 import { TimeWindowReport } from "./components/TimeWindowReport";
@@ -120,6 +121,7 @@ export default function App() {
       {tab === "reports" && (
         <main>
           <DailyReport />
+          <PaperPromotionReport />
           <TimeWindowReport />
         </main>
       )}

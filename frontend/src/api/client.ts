@@ -9,6 +9,7 @@ import type {
   HealthResponse,
   LotSizes,
   LotSizesRefresh,
+  PaperPromotionReport,
   ResultRecord,
   ResultSummary,
   TimeWindowReport,
@@ -99,6 +100,12 @@ export const api = {
   timeWindowReport(symbol?: string): Promise<TimeWindowReport> {
     return request<TimeWindowReport>(
       `/reports/time-windows${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`,
+    );
+  },
+
+  paperPromotionReport(symbol?: string): Promise<PaperPromotionReport> {
+    return request<PaperPromotionReport>(
+      `/reports/paper-promotion${symbol ? `?symbol=${encodeURIComponent(symbol)}` : ""}`,
     );
   },
 

@@ -205,6 +205,45 @@ export interface TimeWindowReport {
   symbols: Record<string, TimeWindowDecision[]>;
 }
 
+export interface PaperPromotionPolicy {
+  min_trades: number;
+  min_sessions: number;
+  min_profitable_session_rate: number;
+  min_expectancy: number;
+  min_profit_factor: number;
+  max_drawdown_pct: number;
+  max_single_loss_pct: number;
+}
+
+export interface PaperPromotionDecision {
+  symbol: string;
+  strategy: string;
+  status: "PAPER_PROMOTED" | "EVIDENCE_REQUIRED";
+  approved_for_paper_scaling: boolean;
+  live_authorized: false;
+  trades: number;
+  sessions: number;
+  wins: number;
+  win_rate: number;
+  profitable_session_rate: number;
+  net_pnl: number;
+  expectancy: number;
+  profit_factor: number | null;
+  max_drawdown: number;
+  max_drawdown_pct: number;
+  largest_loss: number;
+  largest_loss_pct: number;
+  last_trade: string | null;
+  reasons: string[];
+}
+
+export interface PaperPromotionReport {
+  scope: "PAPER_FORWARD_ONLY";
+  live_authorized: false;
+  promotion_policy: PaperPromotionPolicy;
+  decisions: PaperPromotionDecision[];
+}
+
 // ── Instrument lot sizes ──────────────────────────────────────────────────────
 export interface LotSizes {
   lots: Record<string, number>;

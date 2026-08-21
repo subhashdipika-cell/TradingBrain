@@ -86,19 +86,43 @@ async def daily_report(date: str | None = Query(default=None)) -> dict[str, Any]
 @router.get("/reports/time-windows")
 async def time_window_report(symbol: str | None = Query(default=None)) -> dict[str, Any]:
     """Return accumulated paper-trade time-window evidence and gate status."""
-    symbols = [symbol.upper()] if symbol else list(_store.time_window_tracker.symbols())
+    tracker = ResultsStore(settings.RESULTS_DIR).time_window_tracker
+    symbols = [symbol.upper()] if symbol else list(tracker.symbols())
     return {
         "promotion_policy": {
-            "min_trades": _store.time_window_tracker.config.min_trades,
-            "min_sessions": _store.time_window_tracker.config.min_sessions,
-            "min_expectancy": _store.time_window_tracker.config.min_expectancy,
-            "min_profit_factor": _store.time_window_tracker.config.min_profit_factor,
-            "min_win_rate": _store.time_window_tracker.config.min_win_rate,
+            "min_trades": tracker.config.min_trades,
+            "min_sessions": tracker.config.min_sessions,
+            "min_expectancy": tracker.config.min_expectancy,
+            "min_profit_factor": tracker.config.min_profit_factor,
+            "min_win_rate": tracker.config.min_win_rate,
         },
         "symbols": {
-            name: _store.time_window_tracker.promotion_report(name)
+            name: tracker.promotion_report(name)
             for name in symbols
         },
+    }
+
+
+@router.get("/reports/paper-promotion")
+async def paper_promotion_report(
+    symbol: str | None = Query(default=None),
+) -> dict[str, Any]:
+    """Return strategy-level promotion evidence from PAPER forward runs only."""
+    tracker = ResultsStore(settings.RESULTS_DIR).paper_promotion_tracker
+    cfg = tracker.config
+    return {
+        "scope": "PAPER_FORWARD_ONLY",
+        "live_authorized": False,
+        "promotion_policy": {
+            "min_trades": cfg.min_trades,
+            "min_sessions": cfg.min_sessions,
+            "min_profitable_session_rate": cfg.min_profitable_session_rate,
+            "min_expectancy": cfg.min_expectancy,
+            "min_profit_factor": cfg.min_profit_factor,
+            "max_drawdown_pct": cfg.max_drawdown_pct,
+            "max_single_loss_pct": cfg.max_single_loss_pct,
+        },
+        "decisions": tracker.report(symbol),
     }
 
 

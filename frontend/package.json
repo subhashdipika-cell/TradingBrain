@@ -9,7 +9,7 @@
     "prebuild": "npm run optimize:images",
     "build": "tsc -b && vite build",
     "preview": "vite preview --port 5174",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "dependencies": {
     "react": "^18.3.1",

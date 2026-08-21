@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.domains.analytics.journal import TradeJournal
+from app.domains.analytics.paper_promotion import PaperPromotionTracker
 from app.domains.analytics.reports import build_summary
 from app.domains.analytics.time_window import TimeWindowTracker
 
@@ -48,6 +49,9 @@ class ResultsStore:
         os.makedirs(self._dir, exist_ok=True)
         self.time_window_tracker = TimeWindowTracker(
             os.path.join(self._dir, "time_window_stats.json")
+        )
+        self.paper_promotion_tracker = PaperPromotionTracker(
+            os.path.join(self._dir, "paper_promotion_stats.json")
         )
 
     # ------------------------------------------------------------------
@@ -84,6 +88,7 @@ class ResultsStore:
                     "entry_time": t.entry_time.isoformat(),
                     "exit_time": t.exit_time.isoformat(),
                     "pnl": t.pnl,
+                    "commission": t.commission,
                     "exit_reason": t.exit_reason,
                     "lots": t.lots,
                 }
@@ -94,6 +99,15 @@ class ResultsStore:
             json.dump(record, fh, indent=2)
         if run_type == "forward-test":
             self.time_window_tracker.ingest_journal(run_id, journal)
+            starting_capital = float(
+                (params or {}).get("starting_capital")
+                or summary["equity"]["starting"]
+            )
+            self.paper_promotion_tracker.ingest_journal(
+                run_id,
+                journal,
+                starting_capital=starting_capital,
+            )
         return self._to_summary(record)
 
     def list(self) -> list[ResultSummary]:
