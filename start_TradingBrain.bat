@@ -22,12 +22,12 @@ if errorlevel 1 (
 )
 
 set "BACKEND_STATE=missing"
-powershell.exe -NoLogo -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 8200 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $c){exit 2}; $cmd=(Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\" -ErrorAction SilentlyContinue).CommandLine; if($cmd -match 'TradingBrain.+uvicorn app[.]main:app'){exit 0}; exit 1" >nul 2>&1
+powershell.exe -NoLogo -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 8200 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $c){exit 2}; $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\" -ErrorAction SilentlyContinue; $cmd=''; for($i=0; $p -and $i -lt 5; $i++){ $cmd += ' ' + $p.CommandLine; if(-not $p.ParentProcessId){break}; $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\" -ErrorAction SilentlyContinue }; if($cmd -match 'TradingBrain.+uvicorn app[.]main:app'){exit 0}; exit 1" >nul 2>&1
 if not errorlevel 1 set "BACKEND_STATE=ready"
 if errorlevel 1 if not errorlevel 2 set "BACKEND_STATE=conflict"
 
 set "FRONTEND_STATE=missing"
-powershell.exe -NoLogo -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 5174 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $c){exit 2}; $cmd=(Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\" -ErrorAction SilentlyContinue).CommandLine; if($cmd -match 'TradingBrain.+vite'){exit 0}; exit 1" >nul 2>&1
+powershell.exe -NoLogo -NoProfile -Command "$c=Get-NetTCPConnection -LocalPort 5174 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1; if(-not $c){exit 2}; $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($c.OwningProcess)\" -ErrorAction SilentlyContinue; $cmd=''; for($i=0; $p -and $i -lt 5; $i++){ $cmd += ' ' + $p.CommandLine; if(-not $p.ParentProcessId){break}; $p=Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\" -ErrorAction SilentlyContinue }; if($cmd -match 'TradingBrain.+vite'){exit 0}; exit 1" >nul 2>&1
 if not errorlevel 1 set "FRONTEND_STATE=ready"
 if errorlevel 1 if not errorlevel 2 set "FRONTEND_STATE=conflict"
 
@@ -58,9 +58,9 @@ REM --- Frontend (Vite dev server on port 5174) ---
 if "%FRONTEND_STATE%"=="ready" (
   echo [READY] Reusing the TradingBrain frontend on port 5174.
 ) else if /i "%TRADING_LAB_HIDDEN%"=="1" (
-  start "" /b cmd.exe /d /c "cd /d ""%FRONTEND%"" && npm.cmd run dev 1^>^>""%LOGDIR%\frontend.log"" 2^>^&1"
+  start "" /b cmd.exe /d /c "cd /d ""%FRONTEND%"" && npm.cmd run dev -- --host 127.0.0.1 --port 5174 1^>^>""%LOGDIR%\frontend.log"" 2^>^&1"
 ) else (
-  start "TradingBrain Frontend" cmd.exe /k "cd /d ""%FRONTEND%"" && npm.cmd run dev"
+  start "TradingBrain Frontend" cmd.exe /k "cd /d ""%FRONTEND%"" && npm.cmd run dev -- --host 127.0.0.1 --port 5174"
 )
 
 echo.
