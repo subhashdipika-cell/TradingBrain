@@ -21,7 +21,7 @@ class RiskLimits:
     """Platform-level risk limits."""
 
     # Loss controls (fractions of capital)
-    max_daily_loss: float = 0.05
+    max_daily_loss: float = 0.10
     max_drawdown: float = 0.10
     max_position_risk: float = 0.02
 

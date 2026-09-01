@@ -93,7 +93,7 @@ DEFAULT_MAX_HOLD_SESSIONS = 2
 # ZERO lots - the Jul-2026 real-data audit showed 25 valid entries all skipped.
 DEFAULT_REQUESTED_RISK = 0.02  # 2% of capital per convex bet
 MAX_STRATEGY_DRAWDOWN = 0.10
-MAX_DAILY_LOSS = 0.04
+MAX_DAILY_LOSS = 0.10
 
 DEFAULT_CONFIDENCE = 0.55
 DEFAULT_INITIAL_CAPITAL = 0.25  # capital allocation fraction

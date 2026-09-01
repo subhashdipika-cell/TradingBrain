@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     # own inside the 10:20-14:30 IST window. STAND_ASIDE days are recorded,
     # not traded. Set AUTO_FORWARD_TEST=false in .env to disable.
     AUTO_FORWARD_TEST: bool = True
-    AUTO_FT_CAPITAL: float = 400_000.0
+    AUTO_FT_CAPITAL: float = 1_000_000.0
     # Must span the entry window to the 15:15 square-off, else the run ends
     # early and force-closes an open position (e.g. an iron fly held only 14
     # min on 2026-07-08). At poll_seconds=3.5, a 10:20 start reaches 15:15 in

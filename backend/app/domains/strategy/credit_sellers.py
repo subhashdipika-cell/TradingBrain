@@ -51,7 +51,7 @@ class CreditSellConfig:
     a missing hedge.
     """
     capital_allocation: float = 0.02       # fraction of capital risked / deployed
-    max_daily_loss: float = 0.03
+    max_daily_loss: float = 0.10
     max_strategy_drawdown: float = 0.10
     target_profit_pct: float = 0.50        # exit at 50% of the credit captured
     stop_loss_pct: float = 0.50            # stop when the credit grows 50%

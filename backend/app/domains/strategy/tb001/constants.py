@@ -35,7 +35,7 @@ DEFAULT_CONFIDENCE = 0.0
 
 DEFAULT_SCORE = 0.0
 
-DEFAULT_REQUESTED_RISK = 0.01
+DEFAULT_REQUESTED_RISK = 0.02
 
 # ---------------------------------------------------------------------
 # Risk Limits
@@ -43,7 +43,7 @@ DEFAULT_REQUESTED_RISK = 0.01
 
 MAX_STRATEGY_DRAWDOWN = 0.10
 
-MAX_DAILY_LOSS = 0.05
+MAX_DAILY_LOSS = 0.10
 
 MAX_POSITION_RISK = 0.02
 

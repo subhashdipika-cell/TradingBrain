@@ -67,7 +67,7 @@ def _load_credentials() -> tuple[str, str]:
 def run_forward_test(
     *,
     symbol: str = "NIFTY",
-    starting_capital: float = 400_000.0,
+    starting_capital: float = 1_000_000.0,
     strategy: str = "AUTO",
     max_polls: int | None = None,
 ) -> str | None:
@@ -166,7 +166,7 @@ def run_forward_test(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a Dhan forward (paper) test.")
     parser.add_argument("--symbol", default="NIFTY")
-    parser.add_argument("--capital", type=float, default=400_000.0)
+    parser.add_argument("--capital", type=float, default=1_000_000.0)
     parser.add_argument(
         "--max-polls",
         type=int,

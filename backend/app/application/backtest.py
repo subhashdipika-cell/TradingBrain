@@ -41,7 +41,7 @@ class BacktestConfig:
     start_spot: float = 25_000.0
     annual_vol: float = 0.13
     base_iv: float = 0.12
-    starting_capital: float = 400_000.0
+    starting_capital: float = 1_000_000.0
     slippage_pct: float = 0.0005
     include_costs: bool = True  # apply realistic NSE F&O transaction costs
     seed: int = 42
@@ -59,7 +59,7 @@ def _resolve_actor(name: str):
     from app.domains.strategy.selector import default_selector, register_all_strategies
 
     if (name or "AUTO").upper() == "AUTO":
-        return None, default_selector(), RiskLimits(max_daily_loss=0.03, max_drawdown=0.10), 0.25
+        return None, default_selector(), RiskLimits(max_daily_loss=0.10, max_drawdown=0.10), 0.25
 
     register_all_strategies()
     strat = StrategyRegistry.get(name)()
@@ -67,7 +67,7 @@ def _resolve_actor(name: str):
     return (
         strat, None,
         RiskLimits(
-            max_daily_loss=getattr(cfg, "max_daily_loss", 0.03),
+            max_daily_loss=getattr(cfg, "max_daily_loss", 0.10),
             max_drawdown=getattr(cfg, "max_strategy_drawdown", 0.10),
         ),
         getattr(cfg, "capital_allocation", 0.25),
@@ -126,7 +126,7 @@ def run_dhan_backtest(
     *,
     directory: str,
     symbol: str = "NIFTY50",
-    starting_capital: float = 400_000.0,
+    starting_capital: float = 1_000_000.0,
     slippage_pct: float = 0.0,
     include_costs: bool = True,
     bar_minutes: int = 1,
@@ -167,7 +167,7 @@ def main() -> None:
     parser.add_argument("--symbol", default="NIFTY")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--bar-minutes", type=int, default=5)
-    parser.add_argument("--capital", type=float, default=400_000.0)
+    parser.add_argument("--capital", type=float, default=1_000_000.0)
     parser.add_argument("--spot", type=float, default=25_000.0)
     parser.add_argument("--iv", type=float, default=0.12)
     parser.add_argument("--seed", type=int, default=42)

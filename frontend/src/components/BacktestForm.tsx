@@ -11,7 +11,7 @@ const DEFAULTS: BacktestRequest = {
   symbol: "NIFTY",
   num_days: 30,
   bar_minutes: 5,
-  starting_capital: 400_000,
+  starting_capital: 1_000_000,
   base_iv: 0.12,
   annual_vol: 0.13,
   seed: 42,

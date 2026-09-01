@@ -16,7 +16,7 @@ class BacktestRequest(BaseModel):
     symbol: str = Field(default="NIFTY")
     num_days: int = Field(default=30, ge=1, le=120)
     bar_minutes: int = Field(default=5, ge=1, le=60)
-    starting_capital: float = Field(default=400_000.0, gt=0)
+    starting_capital: float = Field(default=1_000_000.0, gt=0)
     base_iv: float = Field(default=0.12, gt=0, le=2.0)
     annual_vol: float = Field(default=0.13, gt=0, le=2.0)
     seed: int = Field(default=42)

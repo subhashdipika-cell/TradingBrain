@@ -36,7 +36,7 @@ _lock = threading.Lock()
 
 class ForwardTestRequest(BaseModel):
     symbol: str = "NIFTY"
-    starting_capital: float = Field(default=400_000.0, gt=0)
+    starting_capital: float = Field(default=1_000_000.0, gt=0)
     # Default must give the run a chance to actually TRADE. The old default
     # of 30 polls (~105 s) meant every morning-launched run finished half an
     # hour before the 10:15 entry-open cutoff — six zero-trade "forward
